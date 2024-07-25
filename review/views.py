@@ -576,7 +576,7 @@ def generate_dolos_view(request, course_key=None, exercise_key=None, course=None
 
     response = requests.post(
         #'https://radar.minus.cs.aalto.fi/dolos-proxy/api/reports',
-        'https://dolos.cs.aalto.fi/api/reports',
+        'http://localhost:3000/reports',
         files={'dataset[zipfile]': open(temp_submissions_dir + "/" + exercise.key + ".zip", 'rb')},
         data={'dataset[name]': exercise.name + " | " + time_string,
               'dataset[programming_language]': programming_language},
@@ -606,8 +606,107 @@ def generate_dolos_view(request, course_key=None, exercise_key=None, course=None
     return HttpResponseRedirect(request.META.get('HTTP_REFERER', '/'))
 
 @method_decorator(csrf_exempt, name='dispatch')
+class dolos_proxy_api_view(View):
+    upstream_url = 'http://localhost:3000'
+    # Proxy the request to the Dolos API
+    def dispatch(self, request, path):
+        print("APIPROXY: " + path + "\n\n\n\n\n")
+        # Rewrite the URL: prepend the path with the upstream URL
+        base_url = f'{self.upstream_url}/{path}'
+        proxy_url = urljoin(base_url, request.get_full_path())
+        true_url = urljoin(self.upstream_url, path)
+
+        print("APIPROXYURL: " + proxy_url + "\n\n\n\n\n")
+        print("TRUEURL: " + true_url + "\n\n\n\n\n")
+        # Prepare the headers
+        headers = {key: value for (key, value) in request.META.items() if key.startswith('HTTP_')}
+        headers.update({
+            'content-type': request.content_type,
+            'content-length': str(len(request.body)),
+        })
+
+        # Prepare the files
+        files = [(field_name, file) for (field_name, file) in request.FILES.items()]
+
+        # If the path starts with 'static', download and save the file
+        if path.startswith('static') or path.startswith('assets') or path.startswith('api/assets'):
+            local_file_path = settings.BASE_DIR + "/dolos-api-proxy/" + path
+
+            print("BASEDIR: " + settings.BASE_DIR)
+            print("LOCALFILEPATH: " + local_file_path)
+            print("DIRNAME: " + os.path.dirname(local_file_path))
+
+            # Ensure the directory exists
+            if not os.path.exists(os.path.dirname(local_file_path)):
+                os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+
+            with requests.get(true_url, stream=True) as r:
+                r.raise_for_status()
+                with open(local_file_path, 'wb') as f:
+                    f.write(r.content)
+
+            # If a file contains localhost:3000, replace it with localhost:8000/dolos-api-proxy. But only if the file is not a tff or woff2 file
+            if not path.endswith('.ttf') and not path.endswith('.woff2'):
+                with open(local_file_path, 'r') as file:
+                    filedata = file.read()
+                    filedata = filedata.replace("localhost:3000", "localhost:8000/dolos-api-proxy")
+                with open(local_file_path, 'w') as file:
+                    file.write(filedata)
+
+            # Determine the file's MIME type
+            content_type, _ = mimetypes.guess_type(local_file_path)
+
+            # Send the file as a response
+            return FileResponse(open(local_file_path, 'rb'), content_type=content_type)
+
+        
+        # Send the proxied request to the upstream service
+        response = requests.request(
+            method=request.method,
+            url=true_url,
+            data=request.body,
+            headers=headers,
+            files=files,
+            cookies=request.COOKIES,
+            allow_redirects=True,
+        )
+
+        print(request.headers)
+
+        # Print all data from response
+        print("APIRESPONSE: " + str(response))
+
+        # In the response replace all localhost:3000 with localhost:8000/dolos-api-proxy in url and dataset objects
+        response_content = response.content.replace(b"localhost:3000", b"localhost:8000/dolos-api-proxy")
+
+        # Create a Django HttpResponse from the upstream response
+        proxy_response = HttpResponse(
+            content=response_content,
+            status=response.status_code,
+        )
+
+        # Add the Access-Control-Allow-Origin header
+        proxy_response['Access-Control-Allow-Origin'] = '*'
+
+        # Set the Content-Type header based on the file type
+        if request.path.endswith('.css'):
+            proxy_response['Content-Type'] = 'text/css'
+        elif request.path.endswith('.js'):
+            proxy_response['Content-Type'] = 'application/javascript'
+        elif request.path.endswith('.ttf'):
+            proxy_response['Content-Type'] = 'font/ttf'
+        elif request.path.endswith('.woff'):
+            proxy_response['Content-Type'] = 'font/woff'
+        elif request.path.endswith('.woff2'):
+            proxy_response['Content-Type'] = 'font/woff2'
+        elif request.path.endswith('.csv'):
+            proxy_response['Content-Type'] = 'text/csv'
+
+        return proxy_response
+
+@method_decorator(csrf_exempt, name='dispatch')
 class dolos_proxy_view(View):
-    upstream_url = 'https://dolos.cs.aalto.fi'
+    upstream_url = 'http://localhost:8080'
 
     def dispatch(self, request, path):
         # Rewrite the URL: prepend the path with the upstream URL
@@ -632,9 +731,9 @@ class dolos_proxy_view(View):
         if path.startswith('static') or path.startswith('assets') or path.startswith('api/assets'):
             local_file_path = settings.BASE_DIR + "/dolos-proxy/" + path
 
-            print("BASEDIR: " + settings.BASE_DIR)
-            print("LOCALFILEPATH: " + local_file_path)
-            print("DIRNAME: " + os.path.dirname(local_file_path))
+            #print("BASEDIR: " + settings.BASE_DIR)
+            #print("LOCALFILEPATH: " + local_file_path)
+            #print("DIRNAME: " + os.path.dirname(local_file_path))
 
             # Ensure the directory exists
             if not os.path.exists(os.path.dirname(local_file_path)):
@@ -644,6 +743,15 @@ class dolos_proxy_view(View):
                 r.raise_for_status()
                 with open(local_file_path, 'wb') as f:
                     f.write(r.content)
+            
+            # If a file contains localhost:3000, replace it with localhost:8000/dolos-api-proxy. But only if the file is not a tff or woff2 file
+            if not path.endswith('.ttf') and not path.endswith('.woff2'):
+                with open(local_file_path, 'r') as file:
+                    filedata = file.read()
+                    filedata = filedata.replace("localhost:3000", "localhost:8000/dolos-api-proxy")
+                with open(local_file_path, 'w') as file:
+                    file.write(filedata)
+
             # Determine the file's MIME type
             content_type, _ = mimetypes.guess_type(local_file_path)
 
@@ -651,7 +759,7 @@ class dolos_proxy_view(View):
             return FileResponse(open(local_file_path, 'rb'), content_type=content_type)
         
         # If the path starts with 'static', use the true_url
-        print("PATHPATHPATHPATHPATH: " + path)
+        #print("PATHPATHPATHPATHPATH: " + path)
         # Send the proxied request to the upstream service
         response = requests.request(
             method=request.method,
@@ -673,8 +781,8 @@ class dolos_proxy_view(View):
         # Add the Access-Control-Allow-Origin header
         proxy_response['Access-Control-Allow-Origin'] = '*'
 
-        print("proxy_response", proxy_response)
-        print("response", response)
+        #print("proxy_response", proxy_response)
+        #print("response", response)
 
         # Set the Content-Type header based on the file type
         if path.endswith('.css'):
