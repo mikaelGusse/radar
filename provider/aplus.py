@@ -82,6 +82,7 @@ def get_api_client(course):
     """
     Return the AplusTokenClient of the radar robot user.
     """
+    print("Using AplusTokenClient with token:", settings.APLUS_ROBOT_TOKEN)
     return AplusTokenClient(settings.APLUS_ROBOT_TOKEN)
 
 

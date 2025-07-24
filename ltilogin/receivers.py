@@ -55,9 +55,12 @@ def add_course_permissions(sender, **kwargs):
 
         # get or create course
         try:
+            print("Using namespace:", site)
+            print("Course API ID:", course_api_id)
             course = Course.objects.using_namespace(site).get(api_id=course_api_id)
         except Course.DoesNotExist:
             apiclient = user.get_api_client(site)
+            print("Using API client for site:", apiclient)
             url, params = apiclient.normalize_url(course_api)
             apiclient.update_params(params)
             course_obj = apiclient.load_data(url)
