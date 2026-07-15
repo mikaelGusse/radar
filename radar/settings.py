@@ -14,7 +14,7 @@ DEBUG = True
 # Set to True only if running locally and want to test the application with local Celery
 CELERY_DEBUG = False
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["localhost:8000", "localhost:8009", "localhost"]
 AUTH_LTI_LOGIN = {
     'ACCEPTED_ROLES': ['Instructor', 'TA'],
     'STAFF_ROLES': ['Instructor', 'TA'],

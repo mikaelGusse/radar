@@ -5,22 +5,27 @@ import mimetypes
 import time
 from urllib.parse import urljoin
 import concurrent.futures
+import shutil
+import tempfile
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.timezone import now
 from django.http.response import JsonResponse, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import render, redirect, get_object_or_404
 from django.template import loader as template_loader
 from celery.result import AsyncResult
-from django.utils.timezone import now
 from django.views import View
 import requests
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.utils.decorators import method_decorator
+from django.core.cache import cache
 
-from django.db.models import Avg, Q, F
 from django.core.handlers.wsgi import WSGIRequest
+from django.db.models import Avg, Q, F
 
 from data.models import Course, Comparison, Student, Submission, Exercise
 from data import graph
@@ -31,13 +36,14 @@ from radar.settings import (
 from review.decorators import access_resource
 from review.forms import ExerciseForm, ExerciseTemplateForm, DeleteExerciseFrom
 from review.helpers import handle_async_task, build_clusters_for
+from review.dolos_reports import dolos_language, write_dataset, zip_dataset
 from util.misc import is_ajax
 import zipfile
 import os
 import csv
+import re
 import pytz
 from django.http import FileResponse
-import re
 from provider.tasks import recompare_all
 
 # pylint: disable=no-else-return
@@ -57,8 +63,23 @@ def index(request):
     )
 
 
+@login_required
+def toggle_radar_mode(request):
+    """Flip between New Radar (Dolos views, default) and Legacy Radar navigation."""
+    request.session["legacy_radar"] = not request.session.get("legacy_radar", False)
+    referer = request.META.get("HTTP_REFERER", "")
+    # Only bounce back to a same-site page (avoid open redirects).
+    if url_has_allowed_host_and_scheme(referer, allowed_hosts={request.get_host()}):
+        return redirect(referer)
+    return redirect("index")
+
+
 @access_resource
 def course(request, course_key=None, course=None):
+    # New Radar (default) is Dolos-only: show the embedded Dolos hub instead of
+    # the classic management table. Switch to Legacy Radar for the table.
+    if request.method == "GET" and not request.session.get("legacy_radar", False):
+        return redirect("dolos_hub", course_key=course.key)
     context = {
         "hierarchy": ((settings.APP_NAME, reverse("index")), (course.name, None)),
         "course": course,
@@ -99,7 +120,7 @@ def course_histograms(request, course_key=None, course=None):
     )
 
 
-# Render the exercise page with a list of comparisons
+# Render the exercise page (Dolos launcher)
 @access_resource
 def exercise(
     request: WSGIRequest,
@@ -108,6 +129,10 @@ def exercise(
     course: Course | None = None,
     exercise: Exercise | None = None
 ) -> HttpResponse:
+
+    # New Radar (default) routes exercises to the embedded Dolos hub.
+    if not request.session.get("legacy_radar", False):
+        return redirect("dolos_hub_exercise", course_key=course.key, exercise_key=exercise.key)
 
     rows = int(request.GET.get('rows', settings.SUBMISSION_VIEW_HEIGHT))
     one_pair_per_match = request.GET.get('one_pair_per_match', 'false').lower() == 'true'
@@ -128,139 +153,6 @@ def exercise(
             "exercise": exercise,
             "comparisons": comparisons,
             "flagged_comparisons": flagged_comparisons,
-        },
-    )
-
-
-# Render a single comparison between two submissions
-@access_resource
-def comparison(
-    request: WSGIRequest,
-    course_key: str | None = None,
-    exercise_key: str | None = None,
-    ak: str | None = None,
-    bk: str | None = None,
-    ck: str | None = None,
-    course: Course | None = None,
-    exercise: Exercise | None = None,
-) -> HttpResponse:
-
-    comparison = get_object_or_404(
-        Comparison,
-        submission_a__exercise=exercise,
-        pk=ck,
-        submission_a__student__key=ak,
-        submission_b__student__key=bk,
-    )
-    if request.method == "POST":
-        result = "review" in request.POST and comparison.update_review(
-            request.POST["review"]
-        )
-        if is_ajax(request):
-            return JsonResponse({"success": result})
-
-    reverse_flag = False
-    a = comparison.submission_a
-    b = comparison.submission_b
-    if "reverse" in request.GET:
-        reverse_flag = True
-        a = comparison.submission_b
-        b = comparison.submission_a
-
-    p_config = provider_config(course.provider)
-    get_submission_text = configured_function(p_config, "get_submission_text")
-
-    # Get the top comparisons for the exercise
-    top_comparisons = json.loads(exercise.best_comparisons or '[]')
-
-    # Create a regex to find the current comparison in the top comparisons
-    r = re.compile(r'../(.+)-(.+)/' + re.escape(str(comparison.id)))
-
-    try:
-        # Find the index of the current comparison in the top comparisons
-        index = [i for i, c in enumerate(top_comparisons) if re.search(r, c)][0]
-
-        # Get the next and previous comparisons based on the index
-        if index + 1 < len(top_comparisons):
-            next_comparison = top_comparisons[index + 1]
-        else:
-            next_comparison = -1
-
-        if index - 1 >= 0:
-            previous_comparison = top_comparisons[index - 1]
-        else:
-            previous_comparison = -1
-    except IndexError:
-        index = -1
-        next_comparison = -1
-        previous_comparison = -1
-
-    context = {
-        "hierarchy": (
-            (settings.APP_NAME, reverse("index")),
-            (course.name, reverse("course", kwargs={"course_key": course.key})),
-            (
-                exercise.name,
-                reverse(
-                    "exercise",
-                    kwargs={"course_key": course.key, "exercise_key": exercise.key},
-                ),
-            ),
-            ("%s → %s" % (a.student.key, b.student.key), None),
-        ),
-        "course": course,
-        "exercise": exercise,
-        "comparisons": exercise.comparisons_for_student(a.student),
-        "comparison": comparison,
-        "reverse": reverse_flag,
-        "a": a,
-        "b": b,
-        "source_a": get_submission_text(a, p_config),
-        "source_b": get_submission_text(b, p_config),
-        "next_comparison": next_comparison,
-        "previous_comparison": previous_comparison,
-        "index": index,
-        "top_comparisons": len(top_comparisons),
-    }
-
-    return render(
-        request,
-        "review/comparison.html",
-        context,
-    )
-
-
-@access_resource
-def marked_submissions(request, course_key=None, course=None):
-    comparisons = (
-        Comparison.objects.filter(submission_a__exercise__course=course, review__gte=5)
-        .order_by("submission_a__created")
-        .select_related(
-            "submission_a",
-            "submission_b",
-            "submission_a__exercise",
-            "submission_a__student",
-            "submission_b__student",
-        )
-    )
-    suspects = {}
-    for c in comparisons:
-        for s in (c.submission_a.student, c.submission_b.student):
-            if s.id not in suspects:
-                suspects[s.id] = {'key': s.key, 'sum': 0, 'comparisons': []}
-            suspects[s.id]['sum'] += c.review
-            suspects[s.id]['comparisons'].append(c)
-    return render(
-        request,
-        "review/marked.html",
-        {
-            "hierarchy": (
-                (settings.APP_NAME, reverse("index")),
-                (course.name, reverse("course", kwargs={"course_key": course.key})),
-                ("Marked submissions", None),
-            ),
-            "course": course,
-            "suspects": sorted(suspects.values(), reverse=True, key=lambda e: e['sum']),
         },
     )
 
@@ -408,112 +300,6 @@ def configure_course(request, course_key=None, course=None): #pylint: disable=to
     async_api_read = configured_function(p_config, "async_api_read")
     pending_api_read["task_id"] = async_api_read(request, course, has_radar_config)
     return JsonResponse(pending_api_read)
-
-
-@access_resource
-def graph_ui(request, course, course_key):
-    """Course graph UI without the graph data."""
-    context = {
-        "hierarchy": (
-            (settings.APP_NAME, reverse("index")),
-            (course.name, reverse("course", kwargs={"course_key": course.key})),
-            ("Graph", None),
-        ),
-        "course": course,
-        "minimum_similarity_threshold": settings.MATCH_STORE_MIN_SIMILARITY,
-        "number_of_exercises": course.exercises.count(),
-    }
-    return render(request, "review/graph.html", context)
-
-
-# This view is used to build the graph data and clusters for the course.
-@access_resource
-def build_graph(request: WSGIRequest, course: Course | None = None, course_key: str | None = None) -> JsonResponse:
-    # If the request is not a POST request or not an AJAX request, return a 400 error
-    if request.method != "POST" or not is_ajax(request):
-        return HttpResponseBadRequest()
-
-    # Load the task state from the request body
-    task_state = json.loads(request.body.decode("utf-8"))
-
-    # Check if the task state is pending
-    if task_state["task_id"]:
-        task_state = handle_async_task(task_state, course.key)
-
-    # If the task is ready
-    elif not task_state["ready"]:
-        # Check if the graph data is already cached in the database
-        graph_data = json.loads(course.similarity_graph_json or '{}')
-
-        # Get the provider configuration
-        p_config = provider_config(course.provider)
-
-        # Get the parameters for the graph
-        min_similarity, min_matches, use_unique_ex, origin = (
-            task_state["min_similarity"],
-            task_state["min_matches"],
-            task_state["unique_exercises"],
-            task_state["origin"],
-        )
-
-        # Check if the graph data is already cached and matches the parameters
-        if (
-            graph_data
-            and graph_data["min_similarity"] == min_similarity
-            and graph_data["min_matches"] == min_matches
-            and graph_data["unique_exercises"] == use_unique_ex
-        ):
-            # Check if the clusters are already cached in the database
-            clusters = json.loads(course.clusters_json or '{}')
-
-            # Check if the clusters match the parameters
-            if (
-            clusters
-            and clusters["min_similarity"] == min_similarity
-            and clusters["min_matches"] == min_matches
-            and clusters["unique_exercises"] == use_unique_ex
-            and clusters["origin"] == origin
-            ):
-                # Clusters and graph was already cached
-                task_state["graph_data"] = graph_data
-                task_state["clusters"] = clusters["clusters"]
-                task_state["ready"] = True
-
-            else:
-                # Graph was already cached, but clusters not
-                task_state["graph_data"] = graph_data
-
-                # Build clusters
-                if p_config.get("async_graph", True) or CELERY_DEBUG:
-                    async_task = build_clusters_for(task_state, course.key, delay=True)
-                    task_state["task_id"] = [None, async_task.id]
-                else:
-                    task_state["clusters"] = build_clusters_for(task_state, course.key)
-                    task_state["ready"] = True
-
-        else:
-            # No graph cached, build graph and clusters
-            if p_config.get("async_graph", True) or CELERY_DEBUG:
-                async_task = graph.generate_match_graph.delay(
-                    course.key, float(min_similarity), int(min_matches), use_unique_ex
-                )
-                task_state["task_id"] = [async_task.id, None]
-            else:
-                task_state["graph_data"] = graph.generate_match_graph(
-                    course.key, float(min_similarity), int(min_matches), use_unique_ex
-                )
-                task_state["clusters"] = build_clusters_for(task_state, course.key)
-                task_state["ready"] = True
-
-    return JsonResponse(task_state)
-
-
-@access_resource
-def invalidate_graph_cache(request, course, course_key):
-    course.similarity_graph_json = ''
-    course.clusters_json = ''
-    course.save()
-    return HttpResponse("Graph cache invalidated")
 
 
 @access_resource
@@ -690,9 +476,7 @@ def generate_dolos_view(
     date_and_time = datetime.datetime.fromtimestamp(timestamp, pytz.timezone('Europe/Helsinki'))
     time_string = date_and_time.strftime('Day: %Y-%m-%d - Time: %H.%M.%S')
 
-    programming_language = exercise.tokenizer
-    if exercise.tokenizer == "skip":
-        programming_language = "text"
+    programming_language = dolos_language(exercise.tokenizer)
 
     response = requests.post(
         DOLOS_API_SERVER_URL + '/reports',
@@ -805,6 +589,7 @@ class dolos_proxy_api_view(View):
         return proxy_response
 
 @method_decorator(csrf_exempt, name='dispatch')
+@method_decorator(xframe_options_sameorigin, name='dispatch')
 class dolos_proxy_view(View):
     @method_decorator(login_required)
     def dispatch(self, request, *args, **kwargs) -> HttpResponse:
@@ -885,6 +670,466 @@ class dolos_proxy_view(View):
         elif path.endswith('.csv'):
             proxy_response['Content-Type'] = 'text/csv'
         return proxy_response
+
+# ---------------------------------------------------------------------------
+# Aggregate Dolos reports: per-course (students across exercises) and
+# cross-course (exercises across courses). See review/dolos_reports.py for the
+# dataset/metadata format that lets Dolos understand this structure.
+# ponytail: info.csv metadata drives Dolos visualisation only; Dolos still
+# cross-compares every file, so aggregating exercises adds noise you scope
+# visually by label (exercise/course) and by the course/exercise ZIP path.
+# ---------------------------------------------------------------------------
+
+
+def _make_get_text():
+    """Return get_text(submission) -> source, caching provider config per provider."""
+    cache = {}
+
+    def get_text(submission):
+        provider = submission.exercise.course.provider
+        resolved = cache.get(provider)
+        if resolved is None:
+            p_config = provider_config(provider)
+            resolved = (configured_function(p_config, "get_submission_text"), p_config)
+            cache[provider] = resolved
+        get_submission_text, p_config = resolved
+        return get_submission_text(submission, p_config) or ""
+
+    return get_text
+
+
+def _exercise_submissions(exercise, include_all=False):
+    """Submissions to feed Dolos: best-per-student by default, or every valid one
+    (several per student) when include_all. Staff excluded unless opted in."""
+    subs = exercise.valid_submissions if include_all else exercise.best_submissions
+    if not exercise.use_staff_submissions:
+        subs = subs.exclude(student__is_staff=True)
+    return subs
+
+
+def _course_submissions(course, include_all=False):
+    for exercise in course.exercises.all():
+        yield from _exercise_submissions(exercise, include_all)
+
+
+def _generate_dolos_report(submissions, name, programming_language, label_fn):
+    """Build + upload a Dolos dataset. Returns the report id, or None if empty."""
+    submissions = list(submissions)
+    # Dolos needs at least two files to compare (dolos.ts throws otherwise).
+    if len(submissions) < 2:
+        return None
+    work_dir = tempfile.mkdtemp(prefix="dolos_")
+    zip_fd, zip_path = tempfile.mkstemp(suffix=".zip")
+    os.close(zip_fd)
+    try:
+        write_dataset(work_dir, submissions, label_fn, _make_get_text())
+        zip_dataset(work_dir, zip_path)
+        with open(zip_path, "rb") as zip_handle:
+            response = requests.post(
+                DOLOS_API_SERVER_URL + "/reports",
+                files={"dataset[zipfile]": zip_handle},
+                data={
+                    "dataset[name]": name,
+                    "dataset[programming_language]": programming_language,
+                },
+            )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        os.remove(zip_path)
+    return response.json().get("id")
+
+
+def _dolos_report_name(prefix):
+    stamp = datetime.datetime.now(pytz.timezone("Europe/Helsinki"))
+    return "%s | %s" % (prefix, stamp.strftime("Day: %Y-%m-%d - Time: %H.%M.%S"))
+
+
+@access_resource
+def generate_course_dolos_view(request, course_key=None, course=None) -> HttpResponse:
+    """Dolos report over every exercise in a course (students across exercises)."""
+    report_id = _generate_dolos_report(
+        _course_submissions(course),
+        _dolos_report_name(course.name),
+        dolos_language(course.tokenizer),
+        label_fn=lambda submission: submission.exercise.name,
+    )
+    if report_id is None:
+        return HttpResponse("Need at least two submissions to analyse in this course")
+    return redirect("%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id))
+
+
+@login_required
+def generate_cross_course_dolos_view(request) -> HttpResponse:
+    """Dolos report over every accessible course (exercises across courses)."""
+    submissions = []
+    for course in Course.objects.get_available_courses(request.user):
+        submissions.extend(_course_submissions(course))
+    report_id = _generate_dolos_report(
+        submissions,
+        _dolos_report_name("All courses"),
+        # ponytail: courses may mix languages -> "char" (character-based) always
+        # works; split by language and pass a specific Dolos language if noisy.
+        "char",
+        label_fn=lambda submission: submission.exercise.course.name,
+    )
+    if report_id is None:
+        return HttpResponse("Need at least two submissions to analyse")
+    return redirect("%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id))
+
+
+def _cached_report_id(cache_key, generate):
+    # ponytail: best-effort 1h cache so switching hub scopes reuses reports; a
+    # missing/broken memcached just regenerates, and staleness clears on TTL.
+    try:
+        report_id = cache.get(cache_key)
+    except Exception:
+        report_id = None
+    if report_id:
+        return report_id
+    report_id = generate()
+    if report_id:
+        try:
+            cache.set(cache_key, report_id, 60 * 60)
+        except Exception:
+            pass
+    return report_id
+
+
+def _too_few_message(selected_count, include_all, total, students, staff_excluded, scope):
+    """Explain why Dolos has fewer than two files to compare."""
+    mode = "all submissions" if include_all else (
+        "best submission per student" + (" per exercise" if scope == "course" else "")
+    )
+    msg = (
+        "Dolos needs at least 2 files to compare, but only %d matched the current "
+        "filter (%s). This %s has %d submission(s) from %d student(s)%s."
+        % (selected_count, mode, scope, total, students,
+           " with staff excluded" if staff_excluded else "")
+    )
+    if not include_all and total >= 2:
+        msg += " Switch to \u201cAll submissions\u201d above to include every submission."
+    return msg
+
+
+@access_resource
+def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise=None) -> HttpResponse:
+    """
+    Dolos navigation hub: a Radar nav bar (whole-course view + every exercise)
+    around the Dolos report embedded in an iframe. Defaults to the whole-course
+    report; a single exercise when exercise_key is given. ``?all=1`` includes
+    every submission (several per student) instead of only the best per student.
+    Report ids are cached so switching scopes reuses reports.
+    """
+    # Legacy Radar has no hub: send these URLs to the classic views so the mode
+    # toggle takes effect even from inside a Dolos report.
+    if request.session.get("legacy_radar", False):
+        if exercise is not None:
+            return redirect("exercise", course_key=course.key, exercise_key=exercise.key)
+        return redirect("course", course_key=course.key)
+
+    include_all = request.GET.get("all") == "1"
+    mode = "all" if include_all else "best"
+
+    if exercise is not None:
+        selected = list(_exercise_submissions(exercise, include_all))
+        name, language, label_fn = (
+            _dolos_report_name(exercise.name),
+            dolos_language(exercise.tokenizer),
+            lambda sub: sub.student.display_name,
+        )
+        cache_key = "dolos_report:ex:%d:%s" % (exercise.id, mode)
+        total = exercise.submissions.count()
+        students = exercise.submissions.values("student").distinct().count()
+        scope, staff_excluded = "exercise", not exercise.use_staff_submissions
+    else:
+        selected = list(_course_submissions(course, include_all))
+        name, language, label_fn = (
+            _dolos_report_name(course.name),
+            dolos_language(course.tokenizer),
+            lambda sub: sub.exercise.name,
+        )
+        cache_key = "dolos_report:course:%d:%s" % (course.id, mode)
+        total = course.submissions.count()
+        students = course.submissions.values("student").distinct().count()
+        scope, staff_excluded = "course", True
+
+    if len(selected) < 2:
+        report_id = None
+        message = _too_few_message(len(selected), include_all, total, students, staff_excluded, scope)
+    else:
+        report_id = _cached_report_id(
+            cache_key, lambda: _generate_dolos_report(selected, name, language, label_fn)
+        )
+        message = None if report_id else (
+            "Dolos accepted %d files but returned no report \u2014 is the Dolos API "
+            "(%s) running?" % (len(selected), DOLOS_API_SERVER_URL)
+        )
+
+    return render(
+        request,
+        "review/dolos_hub.html",
+        {
+            "hierarchy": (
+                (settings.APP_NAME, reverse("index")),
+                (course.name, reverse("course", kwargs={"course_key": course.key})),
+                ("Dolos" if exercise is None else exercise.name, None),
+            ),
+            "course": course,
+            "exercises": course.exercises.all(),
+            "current_exercise": exercise,
+            "include_all": include_all,
+            "message": message,
+            "report_url": (
+                "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id) if report_id else None
+            ),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy Radar: the original comparison / graph / cluster views. Reachable only
+# in Legacy Radar mode (New Radar routes to the Dolos hub instead).
+# ---------------------------------------------------------------------------
+
+
+# Render a single comparison between two submissions
+@access_resource
+def comparison(
+    request: WSGIRequest,
+    course_key: str | None = None,
+    exercise_key: str | None = None,
+    ak: str | None = None,
+    bk: str | None = None,
+    ck: str | None = None,
+    course: Course | None = None,
+    exercise: Exercise | None = None,
+) -> HttpResponse:
+
+    comparison = get_object_or_404(
+        Comparison,
+        submission_a__exercise=exercise,
+        pk=ck,
+        submission_a__student__key=ak,
+        submission_b__student__key=bk,
+    )
+    if request.method == "POST":
+        result = "review" in request.POST and comparison.update_review(
+            request.POST["review"]
+        )
+        if is_ajax(request):
+            return JsonResponse({"success": result})
+
+    reverse_flag = False
+    a = comparison.submission_a
+    b = comparison.submission_b
+    if "reverse" in request.GET:
+        reverse_flag = True
+        a = comparison.submission_b
+        b = comparison.submission_a
+
+    p_config = provider_config(course.provider)
+    get_submission_text = configured_function(p_config, "get_submission_text")
+
+    # Get the top comparisons for the exercise
+    top_comparisons = json.loads(exercise.best_comparisons or '[]')
+
+    # Create a regex to find the current comparison in the top comparisons
+    r = re.compile(r'../(.+)-(.+)/' + re.escape(str(comparison.id)))
+
+    try:
+        # Find the index of the current comparison in the top comparisons
+        index = [i for i, c in enumerate(top_comparisons) if re.search(r, c)][0]
+
+        # Get the next and previous comparisons based on the index
+        if index + 1 < len(top_comparisons):
+            next_comparison = top_comparisons[index + 1]
+        else:
+            next_comparison = -1
+
+        if index - 1 >= 0:
+            previous_comparison = top_comparisons[index - 1]
+        else:
+            previous_comparison = -1
+    except IndexError:
+        index = -1
+        next_comparison = -1
+        previous_comparison = -1
+
+    context = {
+        "hierarchy": (
+            (settings.APP_NAME, reverse("index")),
+            (course.name, reverse("course", kwargs={"course_key": course.key})),
+            (
+                exercise.name,
+                reverse(
+                    "exercise",
+                    kwargs={"course_key": course.key, "exercise_key": exercise.key},
+                ),
+            ),
+            ("%s → %s" % (a.student.key, b.student.key), None),
+        ),
+        "course": course,
+        "exercise": exercise,
+        "comparisons": exercise.comparisons_for_student(a.student),
+        "comparison": comparison,
+        "reverse": reverse_flag,
+        "a": a,
+        "b": b,
+        "source_a": get_submission_text(a, p_config),
+        "source_b": get_submission_text(b, p_config),
+        "next_comparison": next_comparison,
+        "previous_comparison": previous_comparison,
+        "index": index,
+        "top_comparisons": len(top_comparisons),
+    }
+
+    return render(
+        request,
+        "review/comparison.html",
+        context,
+    )
+
+
+@access_resource
+def marked_submissions(request, course_key=None, course=None):
+    comparisons = (
+        Comparison.objects.filter(submission_a__exercise__course=course, review__gte=5)
+        .order_by("submission_a__created")
+        .select_related(
+            "submission_a",
+            "submission_b",
+            "submission_a__exercise",
+            "submission_a__student",
+            "submission_b__student",
+        )
+    )
+    suspects = {}
+    for c in comparisons:
+        for s in (c.submission_a.student, c.submission_b.student):
+            if s.id not in suspects:
+                suspects[s.id] = {'key': s.key, 'sum': 0, 'comparisons': []}
+            suspects[s.id]['sum'] += c.review
+            suspects[s.id]['comparisons'].append(c)
+    return render(
+        request,
+        "review/marked.html",
+        {
+            "hierarchy": (
+                (settings.APP_NAME, reverse("index")),
+                (course.name, reverse("course", kwargs={"course_key": course.key})),
+                ("Marked submissions", None),
+            ),
+            "course": course,
+            "suspects": sorted(suspects.values(), reverse=True, key=lambda e: e['sum']),
+        },
+    )
+
+
+@access_resource
+def graph_ui(request, course, course_key):
+    """Course graph UI without the graph data."""
+    context = {
+        "hierarchy": (
+            (settings.APP_NAME, reverse("index")),
+            (course.name, reverse("course", kwargs={"course_key": course.key})),
+            ("Graph", None),
+        ),
+        "course": course,
+        "minimum_similarity_threshold": settings.MATCH_STORE_MIN_SIMILARITY,
+        "number_of_exercises": course.exercises.count(),
+    }
+    return render(request, "review/graph.html", context)
+
+
+# This view is used to build the graph data and clusters for the course.
+@access_resource
+def build_graph(request: WSGIRequest, course: Course | None = None, course_key: str | None = None) -> JsonResponse:
+    # If the request is not a POST request or not an AJAX request, return a 400 error
+    if request.method != "POST" or not is_ajax(request):
+        return HttpResponseBadRequest()
+
+    # Load the task state from the request body
+    task_state = json.loads(request.body.decode("utf-8"))
+
+    # Check if the task state is pending
+    if task_state["task_id"]:
+        task_state = handle_async_task(task_state, course.key)
+
+    # If the task is ready
+    elif not task_state["ready"]:
+        # Check if the graph data is already cached in the database
+        graph_data = json.loads(course.similarity_graph_json or '{}')
+
+        # Get the provider configuration
+        p_config = provider_config(course.provider)
+
+        # Get the parameters for the graph
+        min_similarity, min_matches, use_unique_ex, origin = (
+            task_state["min_similarity"],
+            task_state["min_matches"],
+            task_state["unique_exercises"],
+            task_state["origin"],
+        )
+
+        # Check if the graph data is already cached and matches the parameters
+        if (
+            graph_data
+            and graph_data["min_similarity"] == min_similarity
+            and graph_data["min_matches"] == min_matches
+            and graph_data["unique_exercises"] == use_unique_ex
+        ):
+            # Check if the clusters are already cached in the database
+            clusters = json.loads(course.clusters_json or '{}')
+
+            # Check if the clusters match the parameters
+            if (
+            clusters
+            and clusters["min_similarity"] == min_similarity
+            and clusters["min_matches"] == min_matches
+            and clusters["unique_exercises"] == use_unique_ex
+            and clusters["origin"] == origin
+            ):
+                # Clusters and graph was already cached
+                task_state["graph_data"] = graph_data
+                task_state["clusters"] = clusters["clusters"]
+                task_state["ready"] = True
+
+            else:
+                # Graph was already cached, but clusters not
+                task_state["graph_data"] = graph_data
+
+                # Build clusters
+                if p_config.get("async_graph", True) or CELERY_DEBUG:
+                    async_task = build_clusters_for(task_state, course.key, delay=True)
+                    task_state["task_id"] = [None, async_task.id]
+                else:
+                    task_state["clusters"] = build_clusters_for(task_state, course.key)
+                    task_state["ready"] = True
+
+        else:
+            # No graph cached, build graph and clusters
+            if p_config.get("async_graph", True) or CELERY_DEBUG:
+                async_task = graph.generate_match_graph.delay(
+                    course.key, float(min_similarity), int(min_matches), use_unique_ex
+                )
+                task_state["task_id"] = [async_task.id, None]
+            else:
+                task_state["graph_data"] = graph.generate_match_graph(
+                    course.key, float(min_similarity), int(min_matches), use_unique_ex
+                )
+                task_state["clusters"] = build_clusters_for(task_state, course.key)
+                task_state["ready"] = True
+
+    return JsonResponse(task_state)
+
+
+@access_resource
+def invalidate_graph_cache(request, course, course_key):
+    course.similarity_graph_json = ''
+    course.clusters_json = ''
+    course.save()
+    return HttpResponse("Graph cache invalidated")
+
 
 @access_resource
 def students_view(request: WSGIRequest, course: Course | None = None, course_key: str | None = None) -> HttpResponse:
