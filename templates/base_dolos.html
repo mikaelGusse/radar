@@ -30,7 +30,7 @@
 			</span>
 			<span class="spacer"></span>
 			<a href="{% url 'toggle_radar_mode' %}" role="button" class="secondary outline">
-				&#8646; Switch to {% if request.session.legacy_radar %}New Radar{% else %}Legacy Radar{% endif %}
+				&#8646; Switch to {% if request.session.legacy_radar == False %}Legacy Radar{% else %}New Radar{% endif %}
 			</a>
 			<form action="{% url 'logout' %}">
 				<button type="submit" class="secondary outline">Logout</button>

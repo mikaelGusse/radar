@@ -53,6 +53,8 @@ logger = logging.getLogger("radar.review")
 
 @login_required
 def index(request):
+    # Default to Legacy Radar when the mode has not been selected yet.
+    request.session.setdefault("legacy_radar", True)
     return render(
         request,
         "review/index.html",
@@ -65,8 +67,10 @@ def index(request):
 
 @login_required
 def toggle_radar_mode(request):
-    """Flip between New Radar (Dolos views, default) and Legacy Radar navigation."""
-    request.session["legacy_radar"] = not request.session.get("legacy_radar", False)
+    """Flip between Legacy Radar (default) and New Radar (Dolos) navigation."""
+    # Toggle from a Legacy default so first-time users switch to New Radar.
+    request.session["legacy_radar"] = not request.session.get("legacy_radar", True)
+    request.session.save()
     referer = request.META.get("HTTP_REFERER", "")
     # Only bounce back to a same-site page (avoid open redirects).
     if url_has_allowed_host_and_scheme(referer, allowed_hosts={request.get_host()}):
@@ -76,9 +80,9 @@ def toggle_radar_mode(request):
 
 @access_resource
 def course(request, course_key=None, course=None):
-    # New Radar (default) is Dolos-only: show the embedded Dolos hub instead of
-    # the classic management table. Switch to Legacy Radar for the table.
-    if request.method == "GET" and not request.session.get("legacy_radar", False):
+    # Legacy Radar (default) shows the classic management table.
+    # New Radar (Dolos) is enabled when legacy_radar is False.
+    if request.method == "GET" and not request.session.get("legacy_radar", True):
         return redirect("dolos_hub", course_key=course.key)
     context = {
         "hierarchy": ((settings.APP_NAME, reverse("index")), (course.name, None)),
@@ -130,8 +134,9 @@ def exercise(
     exercise: Exercise | None = None
 ) -> HttpResponse:
 
-    # New Radar (default) routes exercises to the embedded Dolos hub.
-    if not request.session.get("legacy_radar", False):
+    # Legacy Radar (default) shows the classic comparison view.
+    # New Radar (Dolos) is enabled when legacy_radar is False.
+    if not request.session.get("legacy_radar", True):
         return redirect("dolos_hub_exercise", course_key=course.key, exercise_key=exercise.key)
 
     rows = int(request.GET.get('rows', settings.SUBMISSION_VIEW_HEIGHT))
@@ -648,8 +653,13 @@ class dolos_proxy_view(View):
 
 
         # Create a Django HttpResponse from the upstream response
+        # Replace the API server URL with the proxy URL so the frontend can reach the API
+        response_content = response.content.replace(
+            DOLOS_API_SERVER_URL.encode(), DOLOS_PROXY_API_URL.encode()
+        )
+        
         proxy_response = HttpResponse(
-            content=response.content,
+            content=response_content,
             status=response.status_code,
         )
 
@@ -822,7 +832,7 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
     """
     # Legacy Radar has no hub: send these URLs to the classic views so the mode
     # toggle takes effect even from inside a Dolos report.
-    if request.session.get("legacy_radar", False):
+    if request.session.get("legacy_radar", True):
         if exercise is not None:
             return redirect("exercise", course_key=course.key, exercise_key=exercise.key)
         return redirect("course", course_key=course.key)
