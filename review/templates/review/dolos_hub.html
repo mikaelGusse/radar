@@ -1,0 +1,39 @@
+{% extends 'base_dolos.html' %}
+
+{% block head %}
+<style>
+	.hub-bar { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-bottom: .4rem; }
+	.hub-tabs { display: flex; flex-wrap: wrap; gap: .3rem; }
+	.hub-tabs a { padding: .25rem .7rem; font-size: .82rem; }
+	.hub-controls { display: flex; align-items: center; gap: .3rem; margin-left: auto; }
+	.hub-controls small { color: var(--pico-muted-color); white-space: nowrap; }
+	.hub-controls a { padding: .2rem .6rem; font-size: .78rem; }
+	.hub-frame { flex: 1; width: 100%; min-height: 72vh; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); background: #fff; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="hub-bar">
+	<nav class="hub-tabs">
+		<a href="{% url 'dolos_hub' course_key=course.key %}{% if include_all %}?all=1{% endif %}"
+		   role="button" class="{% if current_exercise %}secondary outline{% endif %}">Whole-course</a>
+		{% for ex in exercises %}
+		<a href="{% url 'dolos_hub_exercise' course_key=course.key exercise_key=ex.key %}{% if include_all %}?all=1{% endif %}"
+		   role="button" class="{% if current_exercise.key != ex.key %}secondary outline{% endif %}">{{ ex.name }}</a>
+		{% endfor %}
+	</nav>
+	<div class="hub-controls">
+		<small>Per student:</small>
+		<a href="{{ request.path }}" role="button" class="{% if include_all %}secondary outline{% endif %}"
+		   title="One submission per student (best grade)">Best</a>
+		<a href="{{ request.path }}?all=1" role="button" class="{% if not include_all %}secondary outline{% endif %}"
+		   title="Every valid submission, including multiple per student">All</a>
+	</div>
+</div>
+
+{% if report_url %}
+<iframe class="hub-frame" src="{{ report_url }}" title="Dolos report"></iframe>
+{% else %}
+<article>{{ message }}</article>
+{% endif %}
+{% endblock %}

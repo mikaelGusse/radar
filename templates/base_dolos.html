@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Radar{% for i in hierarchy %}{% if forloop.counter > 1 %} — {{ i.0 }}{% endif %}{% endfor %}</title>
+	{# ponytail: Pico via CDN = instant modern look, zero build. Vendor locally for offline/prod. #}
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+	<style>
+		body { display: flex; flex-direction: column; min-height: 100vh; margin: 0; }
+		[role="button"], button { width: auto; }  /* Pico defaults buttons to full width */
+		.app-header { border-bottom: 1px solid var(--pico-muted-border-color); }
+		.app-header nav { display: flex; align-items: center; gap: .75rem; padding-block: .35rem; margin: 0; }
+		.app-header nav .spacer { flex: 1; }
+		.app-header .brand { font-weight: 700; }
+		.app-header .brand a { text-decoration: none; }
+		.app-header form { margin: 0; }
+		.app-header [role="button"], .app-header button { padding: .25rem .7rem; font-size: .8rem; margin: 0; }
+		main.app-main { flex: 1; display: flex; flex-direction: column; padding-block: .5rem; }
+		main.app-main > * { margin-block: 0; }
+	</style>
+	{% block head %}{% endblock %}
+</head>
+<body>
+	{% if user.is_authenticated %}
+	<header class="app-header container-fluid">
+		<nav>
+			<span class="brand">
+				{% for i in hierarchy %}{% if i.1 %}<a href="{{ i.1 }}">{{ i.0 }}</a>{% else %}{{ i.0 }}{% endif %}{% if not forloop.last %} <small>/</small> {% endif %}{% endfor %}
+			</span>
+			<span class="spacer"></span>
+			<a href="{% url 'toggle_radar_mode' %}" role="button" class="secondary outline">
+				&#8646; Switch to {% if request.session.legacy_radar == False %}Legacy Radar{% else %}New Radar{% endif %}
+			</a>
+			<form action="{% url 'logout' %}">
+				<button type="submit" class="secondary outline">Logout</button>
+			</form>
+		</nav>
+	</header>
+	{% endif %}
+	<main class="app-main container-fluid">
+		{% block content %}{% endblock %}
+	</main>
+</body>
+</html>

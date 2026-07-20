@@ -1,8 +1,8 @@
-{% extends 'base.html' %}
+{% extends request.session.legacy_radar|yesno:"base.html,base_dolos.html" %}
 {% block content %}
 
 <p>
-    <a href="/cheatersheet" class="btn btn-primary">
+    <a href="/cheatersheet" role="button" class="btn btn-default secondary">
         <span class="glyphicon glyphicon-new-window"></span> Go to cheatersheet
     </a>
 </p>

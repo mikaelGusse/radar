@@ -2,27 +2,31 @@ from django.urls import re_path
 
 from review.views import (
     build_graph,
+    clusters_view,
+    cluster_view,
     comparison,
     configure_course,
     course,
     course_histograms,
     dolos_proxy_api_view,
     dolos_proxy_view,
+    dolos_hub,
     exercise,
     exercise_settings,
+    flagged_pairs,
+    generate_course_dolos_view,
+    generate_cross_course_dolos_view,
     generate_dolos_view,
     go_to_dolos_view,
     graph_ui,
     index,
     invalidate_graph_cache,
     marked_submissions,
-    students_view,
-    student_view,
     pair_view,
     pair_view_summary,
-    flagged_pairs,
-    clusters_view,
-    cluster_view,
+    students_view,
+    student_view,
+    toggle_radar_mode,
 )
 
 
@@ -33,9 +37,34 @@ urlpatterns = [
         name='index'
     ),
     re_path(
+        r'^toggle_radar$',
+        toggle_radar_mode,
+        name='toggle_radar_mode'
+    ),
+    re_path(
+        r'^cross_course_dolos$',
+        generate_cross_course_dolos_view,
+        name='cross_course_dolos'
+    ),
+    re_path(
         r'^(?P<course_key>\w+)/$',
         course,
         name='course'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/course_dolos$',
+        generate_course_dolos_view,
+        name='course_dolos'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/$',
+        dolos_hub,
+        name='dolos_hub'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/(?P<exercise_key>\w+)/$',
+        dolos_hub,
+        name='dolos_hub_exercise'
     ),
     re_path(
         r'^(?P<course_key>\w+)/histogram/$',
@@ -43,14 +72,14 @@ urlpatterns = [
         name='course_histograms'
     ),
     re_path(
-        r'^(?P<course_key>\w+)/marked/$',
-        marked_submissions,
-        name='marked_submissions'
-    ),
-    re_path(
         r'^(?P<course_key>\w+)/configure/$',
         configure_course,
         name='configure_course'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/marked/$',
+        marked_submissions,
+        name='marked_submissions'
     ),
     re_path(
         r'^(?P<course_key>\w+)/graph/$',
