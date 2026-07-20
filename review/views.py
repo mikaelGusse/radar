@@ -657,7 +657,7 @@ class dolos_proxy_view(View):
         response_content = response.content.replace(
             DOLOS_API_SERVER_URL.encode(), DOLOS_PROXY_API_URL.encode()
         )
-        
+
         proxy_response = HttpResponse(
             content=response_content,
             status=response.status_code,
@@ -842,10 +842,13 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
 
     if exercise is not None:
         selected = list(_exercise_submissions(exercise, include_all))
-        name, language, label_fn = (
+
+        def label_fn(sub):
+            return sub.student.display_name
+
+        name, language = (
             _dolos_report_name(exercise.name),
             dolos_language(exercise.tokenizer),
-            lambda sub: sub.student.display_name,
         )
         cache_key = "dolos_report:ex:%d:%s" % (exercise.id, mode)
         total = exercise.submissions.count()
@@ -853,10 +856,13 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
         scope, staff_excluded = "exercise", not exercise.use_staff_submissions
     else:
         selected = list(_course_submissions(course, include_all))
-        name, language, label_fn = (
+
+        def label_fn(sub):
+            return sub.exercise.name
+
+        name, language = (
             _dolos_report_name(course.name),
             dolos_language(course.tokenizer),
-            lambda sub: sub.exercise.name,
         )
         cache_key = "dolos_report:course:%d:%s" % (course.id, mode)
         total = course.submissions.count()

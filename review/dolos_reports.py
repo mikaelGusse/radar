@@ -15,6 +15,8 @@ bottom: ``python -m review.dolos_reports``).
 import csv
 import datetime
 import os
+import tempfile
+import types
 import zipfile
 
 
@@ -99,9 +101,6 @@ def zip_dataset(src_dir, zip_path):
 
 def _demo():
     """Self-check with fake submissions; run: ``python -m review.dolos_reports``."""
-    import tempfile
-    import types
-
     def fake(course_key, ex_key, ex_name, course_name, student_key, sub_id):
         course = types.SimpleNamespace(key=course_key, name=course_name)
         return types.SimpleNamespace(
