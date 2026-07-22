@@ -12,6 +12,7 @@ This module is deliberately free of Django and network imports so the dataset
 builder stays runnable on its own (see the ``__main__`` self-check at the
 bottom: ``python -m review.dolos_reports``).
 """
+import concurrent.futures
 import csv
 import datetime
 import os
@@ -62,13 +63,22 @@ def write_dataset(work_dir, submissions, label_fn, get_text):
     ``label_fn(submission)`` returns the Dolos colour label and
     ``get_text(submission)`` returns the source code. Returns the info rows.
     """
+    submissions = list(submissions)
+    # get_text often does network I/O (e.g. one HTTP request per submission
+    # file against the A+ API), which dominates report generation time when
+    # done one submission at a time. Threads overlap that I/O; the GIL isn't
+    # held while waiting on the network, so this scales well even though it's
+    # not multiprocessing.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        texts = list(executor.map(get_text, submissions))
+
     rows = []
-    for submission in submissions:
+    for submission, text in zip(submissions, texts):
         rel_path = submission_path(submission)
         abs_path = os.path.join(work_dir, *rel_path.split("/"))
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         with open(abs_path, "w", encoding="utf-8") as source_file:
-            source_file.write(get_text(submission))
+            source_file.write(text)
         created_at = submission.provider_submission_time
         if isinstance(created_at, datetime.datetime):
             created_at = created_at.strftime("%Y-%m-%d %H:%M:%S %z")

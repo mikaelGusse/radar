@@ -714,11 +714,14 @@ def _exercise_submissions(exercise, include_all=False):
     subs = exercise.valid_submissions if include_all else exercise.best_submissions
     if not exercise.use_staff_submissions:
         subs = subs.exclude(student__is_staff=True)
-    return subs
+    # write_dataset/submission_path touch submission.student and
+    # submission.exercise.course for every row; select_related avoids a query
+    # per submission for those lookups.
+    return subs.select_related("student", "exercise__course")
 
 
 def _course_submissions(course, include_all=False):
-    for exercise in course.exercises.all():
+    for exercise in course.exercises.select_related("course").all():
         yield from _exercise_submissions(exercise, include_all)
 
 
@@ -828,7 +831,12 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
     around the Dolos report embedded in an iframe. Defaults to the whole-course
     report; a single exercise when exercise_key is given. ``?all=1`` includes
     every submission (several per student) instead of only the best per student.
-    Report ids are cached so switching scopes reuses reports.
+
+    Renders immediately without waiting for report generation: the report id
+    is only cheaply peeked from the cache here. If it isn't already cached,
+    the page shows a loading indicator and fetches ``dolos_hub_report`` (which
+    does the slow zip/upload work) client-side, so the nav bar is usable right
+    away instead of the whole page blocking on Dolos.
     """
     # Legacy Radar has no hub: send these URLs to the classic views so the mode
     # toggle takes effect even from inside a Dolos report.
@@ -838,48 +846,37 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
         return redirect("course", course_key=course.key)
 
     include_all = request.GET.get("all") == "1"
-    mode = "all" if include_all else "best"
+    selected_count, cache_key, counts_source, scope, staff_excluded = _dolos_hub_scope(
+        course, exercise, include_all
+    )
 
-    if exercise is not None:
-        selected = list(_exercise_submissions(exercise, include_all))
+    report_url = None
+    message = None
+    loading = False
 
-        def label_fn(sub):
-            return sub.student.display_name
-
-        name, language = (
-            _dolos_report_name(exercise.name),
-            dolos_language(exercise.tokenizer),
-        )
-        cache_key = "dolos_report:ex:%d:%s" % (exercise.id, mode)
-        total = exercise.submissions.count()
-        students = exercise.submissions.values("student").distinct().count()
-        scope, staff_excluded = "exercise", not exercise.use_staff_submissions
+    if selected_count < 2:
+        total = counts_source.count()
+        students = counts_source.values("student").distinct().count()
+        message = _too_few_message(selected_count, include_all, total, students, staff_excluded, scope)
     else:
-        selected = list(_course_submissions(course, include_all))
+        try:
+            cached_report_id = cache.get(cache_key)
+        except Exception:
+            cached_report_id = None
+        if cached_report_id:
+            report_url = "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, cached_report_id)
+        else:
+            loading = True
 
-        def label_fn(sub):
-            return sub.exercise.name
-
-        name, language = (
-            _dolos_report_name(course.name),
-            dolos_language(course.tokenizer),
-        )
-        cache_key = "dolos_report:course:%d:%s" % (course.id, mode)
-        total = course.submissions.count()
-        students = course.submissions.values("student").distinct().count()
-        scope, staff_excluded = "course", True
-
-    if len(selected) < 2:
-        report_id = None
-        message = _too_few_message(len(selected), include_all, total, students, staff_excluded, scope)
-    else:
-        report_id = _cached_report_id(
-            cache_key, lambda: _generate_dolos_report(selected, name, language, label_fn)
-        )
-        message = None if report_id else (
-            "Dolos accepted %d files but returned no report \u2014 is the Dolos API "
-            "(%s) running?" % (len(selected), DOLOS_API_SERVER_URL)
-        )
+    report_status_url = reverse(
+        "dolos_hub_exercise_report" if exercise is not None else "dolos_hub_report",
+        kwargs=(
+            {"course_key": course.key, "exercise_key": exercise.key}
+            if exercise is not None else {"course_key": course.key}
+        ),
+    )
+    if include_all:
+        report_status_url += "?all=1"
 
     return render(
         request,
@@ -895,11 +892,95 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
             "current_exercise": exercise,
             "include_all": include_all,
             "message": message,
-            "report_url": (
-                "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id) if report_id else None
-            ),
+            "report_url": report_url,
+            "loading": loading,
+            "report_status_url": report_status_url,
         },
     )
+
+
+def _dolos_hub_scope(course, exercise, include_all):
+    """Cheap (query-only) info about a hub scope: how many submissions match,
+    the cache key for its report, a queryset for total/student counts, and the
+    scope's name + whether staff are excluded. Used by both dolos_hub (to
+    decide whether to show a spinner) and dolos_hub_report (to generate)."""
+    mode = "all" if include_all else "best"
+    if exercise is not None:
+        selected_count = _exercise_submissions(exercise, include_all).count()
+        cache_key = "dolos_report:ex:%d:%s" % (exercise.id, mode)
+        counts_source = exercise.submissions
+        scope, staff_excluded = "exercise", not exercise.use_staff_submissions
+    else:
+        selected_count = sum(
+            _exercise_submissions(ex, include_all).count() for ex in course.exercises.all()
+        )
+        cache_key = "dolos_report:course:%d:%s" % (course.id, mode)
+        counts_source = course.submissions
+        scope, staff_excluded = "course", True
+    return selected_count, cache_key, counts_source, scope, staff_excluded
+
+
+@access_resource
+def dolos_hub_report(request, course_key=None, exercise_key=None, course=None, exercise=None) -> JsonResponse:
+    """
+    AJAX endpoint backing dolos_hub's loading indicator: does the actual
+    (potentially slow) submission gathering + report generation/upload, and
+    reports back whether a report is ready, empty, or failed.
+    """
+    include_all = request.GET.get("all") == "1"
+    mode = "all" if include_all else "best"
+
+    if exercise is not None:
+        selected = list(_exercise_submissions(exercise, include_all))
+
+        def label_fn(sub):
+            return sub.student.display_name
+
+        name, language = (
+            _dolos_report_name(exercise.name),
+            dolos_language(exercise.tokenizer),
+        )
+        cache_key = "dolos_report:ex:%d:%s" % (exercise.id, mode)
+        counts_source = exercise.submissions
+        scope, staff_excluded = "exercise", not exercise.use_staff_submissions
+    else:
+        selected = list(_course_submissions(course, include_all))
+
+        def label_fn(sub):
+            return sub.exercise.name
+
+        name, language = (
+            _dolos_report_name(course.name),
+            dolos_language(course.tokenizer),
+        )
+        cache_key = "dolos_report:course:%d:%s" % (course.id, mode)
+        counts_source = course.submissions
+        scope, staff_excluded = "course", True
+
+    if len(selected) < 2:
+        total = counts_source.count()
+        students = counts_source.values("student").distinct().count()
+        return JsonResponse({
+            "status": "empty",
+            "message": _too_few_message(len(selected), include_all, total, students, staff_excluded, scope),
+        })
+
+    report_id = _cached_report_id(
+        cache_key, lambda: _generate_dolos_report(selected, name, language, label_fn)
+    )
+    if not report_id:
+        return JsonResponse({
+            "status": "error",
+            "message": (
+                "Dolos accepted %d files but returned no report \u2014 is the Dolos API "
+                "(%s) running?" % (len(selected), DOLOS_API_SERVER_URL)
+            ),
+        })
+    return JsonResponse({
+        "status": "ready",
+        "report_url": "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id),
+    })
+
 
 
 # ---------------------------------------------------------------------------

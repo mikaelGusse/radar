@@ -33,6 +33,40 @@
 
 {% if report_url %}
 <iframe class="hub-frame" src="{{ report_url }}" title="Dolos report"></iframe>
+{% elif loading %}
+<article id="hub-status" aria-busy="true">
+	<p id="hub-status-text">Generating the Dolos report&hellip; this can take a while for large exercises.</p>
+	<progress id="hub-status-progress"></progress>
+</article>
+<iframe class="hub-frame" id="hub-frame" style="display:none;" title="Dolos report"></iframe>
+<script>
+(function () {
+	fetch("{{ report_status_url|escapejs }}", { headers: { "X-Requested-With": "XMLHttpRequest" } })
+		.then(function (response) { return response.json(); })
+		.then(function (data) {
+			if (data.status === "ready") {
+				var frame = document.getElementById("hub-frame");
+				frame.src = data.report_url;
+				frame.style.display = "";
+				document.getElementById("hub-status").remove();
+			} else {
+				var progress = document.getElementById("hub-status-progress");
+				if (progress) { progress.remove(); }
+				var status = document.getElementById("hub-status");
+				status.removeAttribute("aria-busy");
+				document.getElementById("hub-status-text").textContent = data.message;
+			}
+		})
+		.catch(function () {
+			var progress = document.getElementById("hub-status-progress");
+			if (progress) { progress.remove(); }
+			var status = document.getElementById("hub-status");
+			status.removeAttribute("aria-busy");
+			document.getElementById("hub-status-text").textContent =
+				"Failed to reach Radar while generating the report. Try reloading the page.";
+		});
+})();
+</script>
 {% else %}
 <article>{{ message }}</article>
 {% endif %}

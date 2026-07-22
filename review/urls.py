@@ -11,6 +11,7 @@ from review.views import (
     dolos_proxy_api_view,
     dolos_proxy_view,
     dolos_hub,
+    dolos_hub_report,
     exercise,
     exercise_settings,
     flagged_pairs,
@@ -65,6 +66,16 @@ urlpatterns = [
         r'^(?P<course_key>\w+)/dolos_hub/(?P<exercise_key>\w+)/$',
         dolos_hub,
         name='dolos_hub_exercise'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/report/$',
+        dolos_hub_report,
+        name='dolos_hub_report'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/(?P<exercise_key>\w+)/report/$',
+        dolos_hub_report,
+        name='dolos_hub_exercise_report'
     ),
     re_path(
         r'^(?P<course_key>\w+)/histogram/$',

@@ -78,11 +78,33 @@ def recompare(exercise, config):
         matcher_tasks.match_exercise(exercise.id)
 
 
+_api_client = None
+
+
 def get_api_client(course):
     """
-    Return the AplusTokenClient of the radar robot user.
+    Return the (shared) AplusTokenClient of the radar robot user.
+
+    The client is reused across calls instead of built fresh each time so its
+    underlying requests.Session keeps its connection pool (TCP/TLS keep-alive)
+    alive between requests -- building a new client per submission fetch was
+    paying for a fresh handshake on every single request. ``course`` isn't
+    used to select the client (a single robot token/session serves every
+    course), but is kept in the signature since callers pass it.
     """
-    return AplusTokenClient(settings.APLUS_ROBOT_TOKEN)
+    global _api_client
+    if _api_client is None:
+        client = AplusTokenClient(settings.APLUS_ROBOT_TOKEN)
+        # Default adapter pool (10 connections) is too small once several
+        # submissions are fetched concurrently (see review/dolos_reports.py's
+        # ThreadPoolExecutor); size it generously so threads reuse connections
+        # instead of opening new ones or blocking for a free slot.
+        adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32)
+        client.session.mount("https://", adapter)
+        client.session.mount("http://", adapter)
+        _api_client = client
+    return _api_client
+
 
 
 def request_template_content(url, course):
