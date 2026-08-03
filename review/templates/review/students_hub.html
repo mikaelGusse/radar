@@ -1,0 +1,138 @@
+{% extends 'base_dolos.html' %}
+{% load review %}
+
+{% block head %}
+<style>
+	.hub-split { display: flex; gap: 1rem; min-height: 72vh; }
+	.hub-sidebar { width: 220px; flex-shrink: 0; overflow-y: auto; border-right: 2px solid var(--pico-muted-border-color); padding-right: 1rem; }
+	.hub-sidebar h3 { font-size: .85rem; margin: 0 0 .75rem 0; color: var(--pico-muted-color); }
+	.hub-sidebar a { display: block; padding: .5rem .75rem; margin-bottom: .35rem; border-radius: var(--pico-border-radius); text-decoration: none; font-size: .85rem; border: 1px solid transparent; }
+	.hub-sidebar a:hover { background: var(--pico-background-color); border-color: var(--pico-muted-border-color); }
+	.hub-main { flex: 1; min-width: 0; }
+	.hub-main .placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--pico-muted-color); text-align: center; }
+	.hub-main .placeholder h4 { margin: 0 0 .5rem 0; font-size: 1rem; }
+	.hub-main .placeholder p { margin: 0; }
+	.summary-head { display: flex; align-items: baseline; gap: .8rem; margin-bottom: .55rem; }
+	.summary-head h4 { margin: 0; }
+	.summary-head .muted { color: var(--pico-muted-color); font-size: .88rem; }
+	.summary-card { border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); padding: .7rem .85rem; margin-bottom: .8rem; }
+	.summary-card h5 { margin: 0 0 .55rem 0; font-size: .95rem; }
+	.summary-grid { display: grid; grid-template-columns: 220px 1fr; gap: .2rem .6rem; font-size: .88rem; }
+	.summary-grid .k { color: var(--pico-muted-color); }
+	.summary-table { width: 100%; border-collapse: collapse; }
+	.summary-table th, .summary-table td { padding: .45rem .5rem; text-align: left; border-bottom: 1px solid var(--pico-muted-border-color); vertical-align: top; }
+	.summary-table th { font-size: .8rem; color: var(--pico-muted-color); font-weight: 600; }
+	.group-members { display: flex; flex-wrap: wrap; gap: .35rem .55rem; }
+	.group-members a { text-decoration: none; }
+	.error { color: #8a1f11; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="hub-split">
+	<aside class="hub-sidebar">
+		<h3>Students</h3>
+		{% for student in students %}
+		<a href="{% url 'student_hub' course_key=course.key student_key=student.key %}">
+			{{ student.display_name }}
+		</a>
+		{% empty %}
+		<p class="muted">No students yet.</p>
+		{% endfor %}
+	</aside>
+	<main class="hub-main">
+		{% include 'review/_course_report_panel.html' %}
+
+		<div class="summary-head">
+			<h4>Similarity Summary</h4>
+			{% if course_report_id %}
+			<span class="muted">Using course-wide report {{ course_report_id }}</span>
+			{% else %}
+			<span class="muted">No course-wide report found yet</span>
+			{% endif %}
+		</div>
+
+		{% if course_report_summary_error %}
+		<article class="error">Failed to load summary data: {{ course_report_summary_error }}</article>
+		{% elif course_report_summary %}
+		<div class="summary-card">
+			<h5>Overview</h5>
+			<div class="summary-grid">
+				<div class="k">Student pairs</div><div>{{ course_report_summary.stats.pairs_total }}</div>
+				<div class="k">Groups (3+ students)</div><div>{{ course_report_summary.stats.groups_total }}</div>
+				<div class="k">Group edge threshold</div><div>{{ course_report_summary.stats.edge_threshold }} shared exercises</div>
+			</div>
+		</div>
+
+		<div class="summary-card">
+			<h5>Top Similar Student Pairs</h5>
+			<table class="summary-table">
+				<thead>
+					<tr>
+						<th>Students</th>
+						<th>Shared Exercises</th>
+						<th>Average Similarity</th>
+						<th>Max Similarity</th>
+						<th>Details</th>
+					</tr>
+				</thead>
+				<tbody>
+					{% for pair in course_report_summary.pair_rows|slice:":40" %}
+					<tr>
+						<td>
+							<a href="{% url 'student_pair_hub' course_key=course.key a_key=pair.a_key b_key=pair.b_key %}">{{ pair.a_name }} and {{ pair.b_name }}</a>
+						</td>
+						<td>{{ pair.exercise_count }}</td>
+						<td>{{ pair.avg_similarity|percent }}</td>
+						<td>{{ pair.max_similarity|percent }}</td>
+						<td>
+							<a href="{% url 'student_pair_hub' course_key=course.key a_key=pair.a_key b_key=pair.b_key %}">View comparisons</a>
+						</td>
+					</tr>
+					{% empty %}
+					<tr><td colspan="5" class="muted">No student pairs found in this report.</td></tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		</div>
+
+		<div class="summary-card">
+			<h5>Potential Groups (3+ Students)</h5>
+			<table class="summary-table">
+				<thead>
+					<tr>
+						<th>Members</th>
+						<th>Size</th>
+						<th>Strong Pair Edges</th>
+						<th>Shared-Exercise Score</th>
+					</tr>
+				</thead>
+				<tbody>
+					{% for group in course_report_summary.group_rows|slice:":20" %}
+					<tr>
+						<td>
+							<div class="group-members">
+								{% for member in group.members %}
+								<a href="{% url 'student_hub' course_key=course.key student_key=member.key %}">{{ member.name }}</a>
+								{% endfor %}
+							</div>
+						</td>
+						<td>{{ group.size }}</td>
+						<td>{{ group.edge_count }}</td>
+						<td>{{ group.shared_exercises_score }}</td>
+					</tr>
+					{% empty %}
+					<tr><td colspan="4" class="muted">No 3+ student groups at the current threshold.</td></tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		</div>
+		{% else %}
+		<div class="placeholder">
+			<h4>No summary yet</h4>
+			<p>Generate a course-wide Dolos report from the Whole Course tab first.</p>
+		</div>
+		{% endif %}
+	</main>
+</div>
+{% endblock %}

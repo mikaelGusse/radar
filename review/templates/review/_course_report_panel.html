@@ -1,0 +1,44 @@
+{% load static %}
+{% comment %}
+Whole-course Dolos report widget: generate button + progress panel.
+Shared by dolos_hub.html and students_hub.html so the button, its markup
+(element IDs) and its JS (static/course_report.js) never drift out of
+sync between the two pages again.
+{% endcomment %}
+<style>
+	.hub-course-actions { display: flex; align-items: center; justify-content: flex-start; gap: .6rem; margin: .2rem 0 .55rem; }
+	.hub-course-actions .generate-btn { padding: .45rem .85rem; font-size: .85rem; }
+	.hub-course-meta { margin: 0 0 .6rem; padding: .55rem .75rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); display: none; }
+	.hub-course-meta.visible { display: block; }
+	.hub-course-meta .line { color: var(--pico-muted-color); font-size: .85rem; margin-bottom: .2rem; }
+	.hub-course-progress { margin: .25rem 0 .6rem; padding: .8rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); display: none; background: var(--pico-card-background-color, var(--pico-background-color)); }
+	.hub-course-progress.active { display: block; }
+	.hub-course-progress p { margin: 0; }
+	.hub-course-progress .status-title { font-weight: 600; margin-bottom: .35rem; }
+	.hub-course-progress .status-title.status-error { color: #8a1f11; }
+	.hub-course-progress .status-hint { font-size: .8rem; color: var(--pico-muted-color); margin-top: .4rem; }
+	.hub-course-progress progress { width: 100%; margin: .55rem 0 .2rem; }
+</style>
+
+<div class="hub-course-actions">
+	<button class="generate-btn" id="generateCourseBtn" type="button" title="Generate one Dolos report for all exercises in this course">
+		Generate Course Report
+	</button>
+</div>
+
+<div class="hub-course-meta" id="hubCourseMeta">
+	<div class="line" id="hubCourseMetaTimestamp"></div>
+</div>
+
+<div class="hub-course-progress{% if course_report_task_status.status == 'pending' %} active{% endif %}" id="hubCourseProgress" aria-live="polite">
+	<p class="status-title" id="hubCourseProgressText">{% if course_report_task_status.current_exercise %}Generating report for {{ course_report_task_status.current_exercise }}&hellip; {{ course_report_task_status.exercises_remaining }} exercise(s) left.{% elif course_report_task_status.status == 'pending' %}Generating course-wide report&hellip; this can take a few minutes.{% else %}Queuing course-wide report generation&hellip;{% endif %}</p>
+	<progress id="hubCourseProgressBar"{% if course_report_task_status.exercises_total %} value="{{ course_report_task_status.exercises_done|default:0 }}" max="{{ course_report_task_status.exercises_total }}"{% endif %}></progress>
+	<p class="status-hint" id="hubCourseProgressHint" style="display:none;">{{ course_report_task_status.hint }}</p>
+</div>
+
+<div id="hubCourseReportResults"></div>
+
+<script src="{% static 'course_report.js' %}?v=20260729b"
+	data-generate-url="{% url 'generate_course_dolos_async' course_key=course.key %}"
+	data-check-url-template="{% url 'check_course_dolos_task' course_key=course.key task_id='__TASK__' %}"
+	data-check-current-url="{% url 'check_course_dolos_task_current' course_key=course.key %}"></script>
