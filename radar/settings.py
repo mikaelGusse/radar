@@ -90,6 +90,14 @@ CACHES = {
         "BACKEND": "django.core.cache.backends.memcached.PyLibMCCache",
         "LOCATION": "127.0.0.1:11211",
     },
+    "course_report_progress": {
+        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+        "LOCATION": "/var/tmp/django_cache_course_progress",
+        "TIMEOUT": 3600,
+        "OPTIONS": {
+            "MAX_ENTRIES": 100,
+        },
+    },
     # Exercise template sources are not stored in the database, but fetched from the provider API each time before
     # the exercise settings view is rendered. This cache stores the fetched templates for 1 hour.
     "exercise_templates": {
@@ -266,6 +274,9 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
+        'OPTIONS': {
+            'timeout': 30,
+        },
     }
 }
 
@@ -375,6 +386,19 @@ update_settings_with_file(
 )
 update_settings_from_environment(__name__, 'RADAR_')
 update_secret_from_file(__name__, os.environ.get('RADAR_SECRET_KEY_FILE', 'secret_key'))
+
+# Local safety fallback:
+# In DEBUG, avoid pylibmc crashes unless explicitly opting in to memcached.
+# Set RADAR_DEBUG_USE_MEMCACHED=1 to force memcached in development.
+if DEBUG and os.environ.get("RADAR_DEBUG_USE_MEMCACHED", "0") != "1":
+    default_cache = CACHES.get("default", {})
+    if default_cache.get("BACKEND") == "django.core.cache.backends.memcached.PyLibMCCache":
+        CACHES["default"] = {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "radar-debug-cache",
+        }
+    if isinstance(CELERY_RESULT_BACKEND, str) and CELERY_RESULT_BACKEND.startswith("cache+memcached://"):
+        CELERY_RESULT_BACKEND = "rpc://"
 
 #Flower
 FLOWER_URL = "http://localhost:5555"
