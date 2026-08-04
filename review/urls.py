@@ -16,6 +16,9 @@ from review.views import (
     exercise_settings,
     flagged_pairs,
     generate_course_dolos_view,
+    generate_course_dolos_async,
+    check_course_dolos_task,
+    check_course_dolos_task_current,
     generate_cross_course_dolos_view,
     generate_dolos_view,
     go_to_dolos_view,
@@ -27,6 +30,9 @@ from review.views import (
     pair_view_summary,
     students_view,
     student_view,
+    students_hub,
+    student_pair_hub,
+    student_hub,
     toggle_radar_mode,
 )
 
@@ -63,14 +69,24 @@ urlpatterns = [
         name='dolos_hub'
     ),
     re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/students/$',
+        students_hub,
+        name='students_hub'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/students/(?P<student_key>\w+)/$',
+        student_hub,
+        name='student_hub'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/students/pair/(?P<a_key>\w+)-(?P<b_key>\w+)/$',
+        student_pair_hub,
+        name='student_pair_hub'
+    ),
+    re_path(
         r'^(?P<course_key>\w+)/dolos_hub/(?P<exercise_key>\w+)/$',
         dolos_hub,
         name='dolos_hub_exercise'
-    ),
-    re_path(
-        r'^(?P<course_key>\w+)/dolos_hub/report/$',
-        dolos_hub_report,
-        name='dolos_hub_report'
     ),
     re_path(
         r'^(?P<course_key>\w+)/dolos_hub/(?P<exercise_key>\w+)/report/$',
@@ -117,6 +133,21 @@ urlpatterns = [
         r'^(?P<course_key>\w+)/students/(?P<student_key>\w+)/$',
         student_view,
         name='student_view',
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/generate_course_dolos/$',
+        generate_course_dolos_async,
+        name='generate_course_dolos_async'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/check_dolos_task/(?P<task_id>[\w-]+)/$',
+        check_course_dolos_task,
+        name='check_course_dolos_task'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/check_dolos_task_current/$',
+        check_course_dolos_task_current,
+        name='check_course_dolos_task_current'
     ),
     re_path(
         r'^(?P<course_key>\w+)/(?P<a_key>\w+)-(?P<b_key>\w+)/$',

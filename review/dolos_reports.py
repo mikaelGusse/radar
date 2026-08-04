@@ -15,11 +15,14 @@ bottom: ``python -m review.dolos_reports``).
 import concurrent.futures
 import csv
 import datetime
+import logging
 import os
 import tempfile
 import types
 import zipfile
 
+
+logger = logging.getLogger(__name__)
 
 INFO_COLUMNS = ["filename", "full_name", "label", "created_at", "exercise", "course"]
 
@@ -55,25 +58,48 @@ def submission_path(submission):
     )
 
 
-def write_dataset(work_dir, submissions, label_fn, get_text):
+def write_submission_files(work_dir, submissions, label_fn, get_text):
     """
     Write each submission's source into ``work_dir`` under its
-    :func:`submission_path` and an ``info.csv`` at the root.
+    :func:`submission_path`. Does not write ``info.csv`` -- callers that want
+    a single dataset from one batch of submissions should use
+    :func:`write_dataset`; callers building a dataset incrementally across
+    several batches (e.g. one call per exercise) should collect the returned
+    rows themselves and write ``info.csv`` once at the end.
 
     ``label_fn(submission)`` returns the Dolos colour label and
-    ``get_text(submission)`` returns the source code. Returns the info rows.
+    ``get_text(submission)`` returns the source code.
+
+    A submission whose ``get_text`` raises (e.g. a transient provider API
+    error) is skipped rather than aborting the whole batch -- one flaky fetch
+    should not fail an entire report. Returns ``(rows, skipped_count)``.
     """
     submissions = list(submissions)
+
+    def safe_get_text(submission):
+        try:
+            return get_text(submission)
+        except Exception:
+            logger.warning(
+                "Skipping submission %s (exercise %s): failed to fetch source",
+                submission.id, submission.exercise.key, exc_info=True,
+            )
+            return None
+
     # get_text often does network I/O (e.g. one HTTP request per submission
     # file against the A+ API), which dominates report generation time when
     # done one submission at a time. Threads overlap that I/O; the GIL isn't
     # held while waiting on the network, so this scales well even though it's
     # not multiprocessing.
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-        texts = list(executor.map(get_text, submissions))
+        texts = list(executor.map(safe_get_text, submissions))
 
     rows = []
+    skipped = 0
     for submission, text in zip(submissions, texts):
+        if text is None:
+            skipped += 1
+            continue
         rel_path = submission_path(submission)
         abs_path = os.path.join(work_dir, *rel_path.split("/"))
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
@@ -93,11 +119,37 @@ def write_dataset(work_dir, submissions, label_fn, get_text):
                 "course": exercise.course.name,
             }
         )
+    return rows, skipped
+
+
+def write_dataset(work_dir, submissions, label_fn, get_text):
+    """
+    Write each submission's source into ``work_dir`` under its
+    :func:`submission_path` and an ``info.csv`` at the root.
+
+    ``label_fn(submission)`` returns the Dolos colour label and
+    ``get_text(submission)`` returns the source code. Returns the info rows.
+    """
+    rows, skipped = write_submission_files(work_dir, submissions, label_fn, get_text)
+    if skipped:
+        logger.warning("write_dataset: skipped %d/%d submission(s) due to fetch errors",
+                       skipped, skipped + len(rows))
+    write_info_csv(work_dir, rows)
+    return rows
+
+
+def write_info_csv(work_dir, rows):
+    """Write ``info.csv`` at the root of ``work_dir`` from already-collected rows."""
     with open(os.path.join(work_dir, "info.csv"), "w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=INFO_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
-    return rows
+
+
+def course_progress_cache_key(task_id):
+    """Cache key for a course-wide report task's progress payload, shared
+    between the Celery task (writer) and the polling views (reader)."""
+    return "dolos_report:course_progress:%s" % task_id
 
 
 def zip_dataset(src_dir, zip_path):

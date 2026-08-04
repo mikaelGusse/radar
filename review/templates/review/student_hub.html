@@ -1,0 +1,113 @@
+{% extends 'base_dolos.html' %}
+
+{% load review %}
+
+{% block head %}
+<style>
+	.hub-split { display: flex; gap: 1rem; min-height: 72vh; }
+	.hub-sidebar { width: 220px; flex-shrink: 0; overflow-y: auto; border-right: 2px solid var(--pico-muted-border-color); padding-right: 1rem; }
+	.hub-sidebar h3 { font-size: .85rem; margin: 0 0 .75rem 0; color: var(--pico-muted-color); }
+	.hub-sidebar a { display: block; padding: .5rem .75rem; margin-bottom: .35rem; border-radius: var(--pico-border-radius); text-decoration: none; font-size: .85rem; border: 1px solid transparent; }
+	.hub-sidebar a:hover { background: var(--pico-background-color); border-color: var(--pico-muted-border-color); }
+	.hub-sidebar a.active { background: var(--pico-primary-background); color: var(--pico-primary-inverse); border-color: var(--pico-primary); }
+	.hub-main { flex: 1; min-width: 0; }
+	.hub-main h3 { margin: 0 0 .5rem 0; }
+	.hub-main table { width: 100%; border-collapse: collapse; }
+	.hub-main th, .hub-main td { padding: .5rem; text-align: left; border-bottom: 1px solid var(--pico-muted-border-color); }
+	.hub-main th { font-size: .8rem; color: var(--pico-muted-color); font-weight: 600; }
+	.hub-main .muted { color: var(--pico-muted-color); }
+	.hub-main a { text-decoration: none; }
+	.hub-warn { margin: 0 0 .7rem 0; padding: .6rem .75rem; border-radius: var(--pico-border-radius); border: 1px solid #d8a200; background: #fff6d9; color: #5c4400; font-size: .9rem; }
+	.debug-panel { margin: 0 0 .7rem 0; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); background: var(--pico-card-background-color, var(--pico-background-color)); }
+	.debug-panel summary { padding: .5rem .7rem; cursor: pointer; font-weight: 600; }
+	.debug-grid { display: grid; grid-template-columns: 220px 1fr; gap: .25rem .6rem; padding: 0 .7rem .7rem; font-size: .88rem; }
+	.debug-grid .k { color: var(--pico-muted-color); }
+	.match-list { margin: .35rem 0 0; }
+	.match-list summary { cursor: pointer; color: var(--pico-muted-color); font-size: .85rem; }
+	.match-list ul { margin: .35rem 0 0; padding-left: 1rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="hub-split">
+	<aside class="hub-sidebar">
+		<h3>Students</h3>
+		{% for listed_student in course.students.all %}
+		<a href="{% url 'student_hub' course_key=course.key student_key=listed_student.key %}"
+		   {% if listed_student.key == student.key %}class="active"{% endif %}>
+			{{ listed_student.display_name }}
+		</a>
+		{% endfor %}
+	</aside>
+	<main class="hub-main">
+		<h3>{{ student.display_name }}</h3>
+		{% if course_wide_fetch_error %}
+		<div class="hub-warn">
+			Could not load pair data from the latest course-wide report ({{ course_wide_report_id }}). The table may show "No similar submissions found" even when matches exist.
+		</div>
+		{% endif %}
+		<details class="debug-panel">
+			<summary>Debug Panel</summary>
+			<div class="debug-grid">
+				<div class="k">Course-wide mode</div><div>{{ debug_info.using_course_wide_report }}</div>
+				<div class="k">Report ID</div><div>{{ debug_info.report_id|default:"(none)" }}</div>
+				<div class="k">Total pair rows read</div><div>{{ debug_info.pairs_total }}</div>
+				<div class="k">Pairs involving student</div><div>{{ debug_info.pairs_for_student }}</div>
+				<div class="k">Exercises with matches</div><div>{{ debug_info.matched_exercises }} / {{ debug_info.exercise_count }}</div>
+				<div class="k">Fetch error</div><div>{{ debug_info.error|default:"(none)" }}</div>
+			</div>
+		</details>
+		{% if using_course_wide_report %}
+		<p class="muted">Best match per exercise, sourced from the latest course-wide Dolos report.</p>
+		{% else %}
+		<p class="muted">Best match per exercise, read straight from each exercise's own Dolos report.</p>
+		{% endif %}
+		<table>
+			<thead>
+				<tr>
+					<th>Exercise</th>
+					<th>Best match</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for row in rows %}
+				<tr>
+					<td>
+						{% if using_course_wide_report %}
+						{{ row.exercise.name }}
+						{% else %}
+						<a href="{{ row.report_url }}">{{ row.exercise.name }}</a>
+						{% endif %}
+					</td>
+					{% if not row.generated %}
+					<td class="muted">Not analysed yet</td>
+					{% elif not row.match %}
+					<td class="muted">No similar submissions found</td>
+					{% else %}
+					<td>
+						{{ row.match.1|percent }} similar to
+						<a href="{% url 'student_hub' course_key=course.key student_key=row.match.0 %}">
+							{{ row.all_matches.0.student_name }}
+						</a>
+						{% if row.all_matches|length > 1 %}
+						<details class="match-list">
+							<summary>All matches ({{ row.all_matches|length }})</summary>
+							<ul>
+								{% for m in row.all_matches %}
+								<li>
+									{{ m.similarity|percent }} similar to
+									<a href="{% url 'student_hub' course_key=course.key student_key=m.student_key %}">{{ m.student_name }}</a>
+								</li>
+								{% endfor %}
+							</ul>
+						</details>
+						{% endif %}
+					</td>
+					{% endif %}
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</main>
+</div>
+{% endblock %}

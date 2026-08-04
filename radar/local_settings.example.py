@@ -42,6 +42,14 @@ CACHES = {
             "MAX_ENTRIES": 100,
         },
     },
+    "course_report_progress": {
+        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+        "LOCATION": "/var/tmp/django_cache_course_progress",
+        "TIMEOUT": 3600,
+        "OPTIONS": {
+            "MAX_ENTRIES": 100,
+        },
+    },
 }
 
 STATIC_ROOT = "static_root"
