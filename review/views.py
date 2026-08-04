@@ -1250,7 +1250,7 @@ def students_view(request: WSGIRequest, course: Course | None = None, course_key
     exercise_ids = course.exercises.all().values_list('key', flat=True)
 
     # Student keys
-    student_info = submissions.values_list('student__key', 'student__is_staff').distinct()
+    student_info = submissions.values_list('student__key', 'student__is_staff', 'student__name').distinct()
 
     students = []
 
@@ -1269,6 +1269,7 @@ def students_view(request: WSGIRequest, course: Course | None = None, course_key
             {
                 'key': student[0],
                 'is_staff': student[1],
+                'name': student[2],
                 'exercises': exercise_similarities,
                 'avg_similarity': sum(similarities) / len(similarities) if len(similarities) > 0 else "",
             }

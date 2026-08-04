@@ -106,6 +106,7 @@ def create_submission(
     # set as approved plagiate and show this in the UI
     ## for submitter_id in _decode_students(data["submitters"]):
     submitter_id = "_".join(aplus._decode_students(data["submitters"]))
+    submitter_name = "_".join(aplus.get_student_names(data["submitters"]))
 
     # Check if any of the submitters is a staff member
     is_staff = check_if_staff(data, course)
@@ -114,7 +115,9 @@ def create_submission(
         submitter_id += "_STAFF"
 
     try:
-        submission = insert_submission(exercise, submission_key, submitter_id, data)
+        submission = insert_submission(
+            exercise, submission_key, submitter_id, submitter_name, data
+        )
 
         # If any of the submitters is a staff member, set the student as staff
         if is_staff:
