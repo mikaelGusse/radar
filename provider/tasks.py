@@ -3,23 +3,20 @@ Celery tasks for asynchronous submission processing.
 Contains some hard-coded A+ specific stuff that should be generalized.
 """
 
-import csv
 import datetime
 import json
-import logging
 import os
 import shutil
 import tempfile
 import time
 
-from django.conf import settings
-from django.core.cache import caches
 import celery
-from celery.exceptions import SoftTimeLimitExceeded
-from celery.utils.log import get_task_logger
-
 import pytz
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
+from celery.utils.log import get_task_logger
+from django.conf import settings
+from django.core.cache import caches
 
 from data.models import Course, Exercise, TaskError
 from matcher import tasks as matcher_tasks
@@ -31,7 +28,7 @@ from provider.insert import (
     InsertError,
 )
 import radar.config as config_loaders
-from radar.settings import DEBUG, CELERY_DEBUG, DOLOS_API_SERVER_URL, DOLOS_PROXY_WEB_URL
+from radar.settings import DEBUG, CELERY_DEBUG, DOLOS_API_SERVER_URL
 from review.dolos_reports import (
     course_progress_cache_key,
     dolos_language,
@@ -53,10 +50,7 @@ class APIAuthException(ProviderAPIError):
 
 
 class CourseReportError(Exception):
-    """Raised when a course-wide Dolos report cannot be produced. The message
-    is shown to the user as-is (via the status polling endpoints), so it must
-    stay understandable without a stack trace."""
-    pass
+    """Raised when a course-wide Dolos report cannot be produced."""
 
 
 # Highly I/O bound task, recommended to be consumed by several workers
@@ -361,8 +355,10 @@ def _wait_for_dolos_report(report_id, report_progress):
                     last_detail = dolos_error or (
                         "exit status %s" % exit_status if exit_status not in (None, 0) else None
                     )
-        except requests.RequestException:
+        except requests.RequestException as exc:
             logger.warning("Transient error polling Dolos report %s status", report_id, exc_info=True)
+            if last_status in ("failed", "error"):
+                last_detail = last_detail or str(exc)
         else:
             if last_status in ("finished", "failed", "error", "purged"):
                 return last_status, last_detail
@@ -389,7 +385,8 @@ def _build_exercise_dolos_report(exercise, include_all=False, report_progress=No
     course-level tasks.
     """
     if report_progress is None:
-        report_progress = lambda **kw: None
+        def report_progress(**_payload):
+            return None
 
     get_submission_text = _make_get_text_for_course(exercise.course)
 
@@ -535,8 +532,6 @@ def generate_exercise_dolos_task(self, exercise_id, include_all=False):
     Raises:
         CourseReportError: if the exercise has no submissions or Dolos fails.
     """
-    from data.models import Exercise
-
     exercise = Exercise.objects.select_related("course").get(id=exercise_id)
     logger.info("Generating Dolos report for exercise %s (%s)", exercise.key, exercise.name)
 
@@ -561,14 +556,37 @@ def generate_exercise_dolos_task(self, exercise_id, include_all=False):
 
     except CourseReportError:
         raise
-    except SoftTimeLimitExceeded:
+    except SoftTimeLimitExceeded as exc:
         raise CourseReportError(
             "Report generation for %s timed out after %d minutes."
             % (exercise.name, self.request.timelimit[0] // 60 if self.request.timelimit else 15)
-        )
+        ) from exc
     except Exception as exc:
         logger.exception("Unexpected error generating report for exercise %s", exercise.key)
         raise CourseReportError("Unexpected error for %s: %s" % (exercise.name, exc)) from exc
+def _make_course_report_progress_callback(
+    report_progress,
+    exercise_name,
+    exercise_key,
+    exercises_done,
+    exercises_total,
+    exercises_remaining,
+):
+    """Return a callback that reports progress for one exercise."""
+
+    def progress_callback(**payload):
+        report_progress(
+            current_exercise=exercise_name,
+            current_exercise_key=exercise_key,
+            exercises_done=exercises_done,
+            exercises_total=exercises_total,
+            exercises_remaining=exercises_remaining,
+            **payload,
+        )
+
+    return progress_callback
+
+
 @celery.shared_task(
     bind=True,
     name="provider.tasks.generate_course_dolos_task",
@@ -598,15 +616,7 @@ def generate_course_dolos_task(self, course_key):
         except Exception:
             logger.warning("Failed to update task state for course report progress", exc_info=True)
 
-    exercises = list(course.exercises.select_related("course").all())
-    # Deduplicate exercises by ID (some courses may have duplicate exercise keys)
-    seen_ids = set()
-    unique_exercises = []
-    for ex in exercises:
-        if ex.id not in seen_ids:
-            seen_ids.add(ex.id)
-            unique_exercises.append(ex)
-    exercises = unique_exercises
+    exercises = _deduplicate_exercises(course.exercises.select_related("course").all())
     total_exercises = len(exercises)
     if total_exercises == 0:
         raise CourseReportError("%s has no exercises configured." % course.name)
@@ -616,44 +626,41 @@ def generate_course_dolos_task(self, course_key):
 
     try:
         report_progress(
-            phase="collecting", current_exercise=None,
-            exercises_done=0, exercises_total=total_exercises,
+            phase="collecting",
+            current_exercise=None,
+            exercises_done=0,
+            exercises_total=total_exercises,
         )
 
         for index, exercise in enumerate(exercises, start=1):
+            remaining = total_exercises - index + 1
             report_progress(
-                phase="processing", current_exercise=exercise.name,
+                phase="processing",
+                current_exercise=exercise.name,
                 current_exercise_key=exercise.key,
-                exercises_done=index - 1, exercises_total=total_exercises,
-                exercises_remaining=total_exercises - index + 1,
+                exercises_done=index - 1,
+                exercises_total=total_exercises,
+                exercises_remaining=remaining,
             )
 
             try:
-                # Default to one best submission per student for fairness,
-                # but if that leaves <2 files while the exercise still has
-                # several valid submissions (e.g. one student with retries),
-                # fall back to include-all so a course report can still be
-                # generated instead of a misleading "only 1 submission" error.
-                best_count = _exercise_submissions(exercise, include_all=False).count()
-                all_count = _exercise_submissions(exercise, include_all=True).count()
-                include_all = best_count < 2 and all_count >= 2
-
+                include_all = _should_include_all_submissions(exercise)
+                progress_callback = _make_course_report_progress_callback(
+                    report_progress,
+                    exercise.name,
+                    exercise.key,
+                    index - 1,
+                    total_exercises,
+                    remaining,
+                )
                 exercise_result = _build_exercise_dolos_report(
                     exercise,
                     include_all=include_all,
-                    report_progress=lambda **payload: report_progress(
-                        current_exercise=exercise.name,
-                        current_exercise_key=exercise.key,
-                        exercises_done=index - 1,
-                        exercises_total=total_exercises,
-                        exercises_remaining=total_exercises - index + 1,
-                        **payload,
-                    ),
+                    report_progress=progress_callback,
                 )
 
                 report_results.append(exercise_result)
                 logger.info("Completed exercise %s/%s: %s", index, total_exercises, exercise.key)
-
             except Exception as exc:
                 logger.warning("Failed to process exercise %s: %s", exercise.key, exc)
                 failed_exercises.append({
@@ -679,14 +686,36 @@ def generate_course_dolos_task(self, course_key):
 
     except CourseReportError:
         raise
-    except SoftTimeLimitExceeded:
+    except SoftTimeLimitExceeded as exc:
         raise CourseReportError(
             "Course-wide report generation timed out after %d minutes."
             % (self.request.timelimit[0] // 60 if self.request.timelimit else 25)
-        )
+        ) from exc
     except Exception as exc:
         logger.exception("Unexpected error generating course-wide report for %s", course_key)
         raise CourseReportError("Unexpected error: %s" % exc) from exc
+
+
+def _deduplicate_exercises(exercises):
+    """Return exercises without duplicate IDs while preserving order."""
+    seen_ids = set()
+    unique_exercises = []
+    for exercise in exercises:
+        if exercise.id in seen_ids:
+            continue
+        seen_ids.add(exercise.id)
+        unique_exercises.append(exercise)
+    return unique_exercises
+
+
+def _should_include_all_submissions(exercise):
+    """Decide whether to include all submissions for an exercise."""
+    best_count = _exercise_submissions(exercise, include_all=False).count()
+    all_count = _exercise_submissions(exercise, include_all=True).count()
+    if best_count < 2:
+        return all_count >= 2
+    return False
+
 
 def _make_get_text_for_course(course):
     """Return a closure that fetches submission text using the A+ API."""
@@ -701,7 +730,7 @@ def _make_get_text_for_course(course):
             submission_id = getattr(submission, 'id', None) or getattr(submission, 'key', None)
             if not submission_id:
                 raise ValueError("Submission has no id or key")
-            
+
             # Use the API client to fetch submission data
             data = api_client.load_data(f"/api/v2/submissions/{submission_id}/")
             # Return the source code from the submission

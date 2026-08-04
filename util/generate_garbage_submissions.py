@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""Generate many synthetic "garbage" submissions for load testing.
-
-Usage examples:
-  python util/generate_garbage_submissions.py --course coursec --students 300 --submissions-per-student 3
-    python util/generate_garbage_submissions.py --course coursec --create-exercises 5 --students 200 --set-filesystem-provider
-    python util/generate_garbage_submissions.py --course coursec --create-exercises 3 --include-existing-exercises --students 150
-    python util/generate_garbage_submissions.py --course coursec --students 800 --submissions-per-student 2 --run-matching
-
-Notes:
-- This script is intended for local/dev test data generation.
-- For Dolos report generation from these submissions, the course provider should
-  be "filesystem" so Radar reads local submission files.
-- By default submissions are prepared with Radar's tokenizer pipeline; use
-    --skip-prepare to only insert raw rows/files.
-- With --create-exercises N, the script creates N brand new synthetic
-    exercises and uses those by default.
-"""
+"""Generate many synthetic "garbage" submissions for load testing."""
 
 from __future__ import annotations
 
@@ -23,19 +7,19 @@ import argparse
 import datetime
 import os
 import random
+import secrets
 import string
 import sys
 from typing import List
-import secrets
 
+# pylint: disable=wrong-import-position
+import django
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "radar.settings")
-
-import django  # noqa: E402
 
 django.setup()
 
@@ -210,9 +194,16 @@ def map_{exercise_index}(items):
     elif student_mode == 2:
         shared_parts = [exercise_shared]
     elif student_mode == 3:
-        shared_parts = [shared, exercise_shared, "\n".join(["# tiny helper", "def helper(x):", "    return x + 1"])]
+        shared_parts = [
+            shared,
+            exercise_shared,
+            "\n".join(["# tiny helper", "def helper(x):", "    return x + 1"]),
+        ]
     elif student_mode == 4:
-        shared_parts = [shared, "\n".join(["# alternate branch", "def branch(x):", "    return x * 2"])]
+        shared_parts = [
+            shared,
+            "\n".join(["# alternate branch", "def branch(x):", "    return x * 2"]),
+        ]
     else:
         shared_parts = [shared]
 
@@ -228,7 +219,9 @@ def map_{exercise_index}(items):
     unique_lines = []
     for idx in range(extra_unique):
         token = "".join(rng.choices(string.ascii_lowercase, k=10))
-        unique_lines.append(f"def unique_{exercise_index}_{student_index}_{attempt}_{idx}(x): return x + {rng.randint(1, 9)}")
+        unique_lines.append(
+            f"def unique_{exercise_index}_{student_index}_{attempt}_{idx}(x): return x + {rng.randint(1, 9)}"
+        )
         unique_lines.append(f"{token} = {rng.randint(0, 99999)}")
 
     footer = (
@@ -308,17 +301,15 @@ def create_synthetic_exercises(course: Course, create_count: int, exercise_prefi
     return created
 
 
-def main() -> None:
-    args = parse_args()
-    rng = random.Random(args.seed)
-
-    course = Course.objects.filter(key=args.course).first()
+def _ensure_course(course_key, create_if_missing, set_filesystem_provider, exercise_prefix):
+    """Create or update the course object for synthetic submissions."""
+    course = Course.objects.filter(key=course_key).first()
     course_created = False
     if course is None:
         namespace, _ = ApiNamespace.objects.get_or_create(id=0)
         course = Course(
-            key=args.course,
-            name=args.course,
+            key=course_key,
+            name=course_key,
             provider="filesystem",
             tokenizer="python",
             api_id=0,
@@ -328,7 +319,7 @@ def main() -> None:
         course_created = True
         print(f"Created course {course.key}")
 
-    if args.set_filesystem_provider and course.provider != "filesystem":
+    if set_filesystem_provider and course.provider != "filesystem":
         course.provider = "filesystem"
         course.save(update_fields=["provider"])
         print(f"Updated course provider to filesystem for {course.key}")
@@ -338,18 +329,121 @@ def main() -> None:
         course.save(update_fields=["tokenizer"])
         print(f"Updated course tokenizer to python for {course.key}")
 
-    created_exercises = create_synthetic_exercises(course, args.create_exercises, args.exercise_prefix)
+    if course.provider != "filesystem" and create_if_missing:
+        print(
+            "Warning: course provider is not 'filesystem'. Dolos/source reads may ignore generated local files. "
+            "Use --set-filesystem-provider for fully local test data."
+        )
 
-    if args.create_exercises > 0:
-        if args.include_existing_exercises:
-            exercises = list(course.exercises.all().order_by("key"))
-        else:
-            exercises = created_exercises
-    else:
-        exercises = list(course.exercises.all().order_by("key"))
+    return course, course_created
 
+
+def _resolve_exercises(course, create_exercises, exercise_prefix, include_existing_exercises):
+    """Select which exercises the synthetic data should populate."""
+    created_exercises = create_synthetic_exercises(course, create_exercises, exercise_prefix)
+    if create_exercises > 0:
+        if include_existing_exercises:
+            return list(course.exercises.all().order_by("key"))
+        return created_exercises
+    exercises = list(course.exercises.all().order_by("key"))
     if not exercises:
-        exercises = ensure_exercises(course, args.create_exercises, args.exercise_prefix)
+        return ensure_exercises(course, create_exercises, exercise_prefix)
+    return exercises
+
+
+def _create_students(course, student_prefix, count):
+    """Create or reuse synthetic students for the run."""
+    students = []
+    for idx in range(1, count + 1):
+        key = f"{student_prefix}{idx:05d}"
+        student, _ = Student.objects.get_or_create(
+            course=course,
+            key=key,
+            defaults={
+                "name": f"Garbage Student {idx}",
+                "email": f"{key}@example.invalid",
+                "is_staff": False,
+            },
+        )
+        students.append(student)
+    return students
+
+
+def _create_submissions(
+    exercises,
+    students,
+    rng,
+    now,
+    run_tag,
+    should_prepare,
+    output_profile,
+    submission_prefix,
+    submissions_per_student,
+):
+    """Create synthetic submissions and optionally prepare them for processing."""
+    created_count = 0
+    prepared_count = 0
+    prepare_failed_count = 0
+    for exercise in exercises:
+        for s_index, student in enumerate(students):
+            cluster_id = s_index % 8
+            for attempt in range(1, submissions_per_student + 1):
+                submission_key = make_unique_submission_key(submission_prefix, run_tag)
+                grade = round(rng.uniform(0, 100), 2)
+                submission = Submission.objects.create(
+                    key=submission_key,
+                    aplus_key=None,
+                    exercise=exercise,
+                    student=student,
+                    provider_url=None,
+                    provider_submission_time=now,
+                    grade=grade,
+                    matched=False,
+                    invalid=False,
+                    max_similarity=0.0,
+                )
+                text = build_source_blob(
+                    rng=rng,
+                    cluster_id=cluster_id,
+                    exercise_key=exercise.key,
+                    student_key=student.key,
+                    attempt=attempt,
+                    exercise_index=exercise.id,
+                    student_index=s_index,
+                    output_profile=output_profile,
+                )
+                files.put_submission_text(submission, text)
+
+                if should_prepare:
+                    try:
+                        prepare_submission(submission)
+                        prepared_count += 1
+                    except InsertError:
+                        prepare_failed_count += 1
+                    except Exception:
+                        prepare_failed_count += 1
+
+                created_count += 1
+    return created_count, prepared_count, prepare_failed_count
+
+
+def main() -> None:
+    args = parse_args()
+    rng = random.Random(args.seed)
+
+    course, _course_created = _ensure_course(
+        args.course,
+        args.create_exercises > 0,
+        args.set_filesystem_provider,
+        args.exercise_prefix,
+    )
+
+    exercises = _resolve_exercises(
+        course,
+        args.create_exercises,
+        args.exercise_prefix,
+        args.include_existing_exercises,
+    )
 
     if course.provider != "filesystem":
         print(
@@ -376,66 +470,20 @@ def main() -> None:
         ).delete()
         print(f"Deleted {deleted_subs} old submissions and {deleted_students} old students for prefixes")
 
-    students: List[Student] = []
-    for idx in range(1, args.students + 1):
-        key = f"{args.student_prefix}{idx:05d}"
-        student, _ = Student.objects.get_or_create(
-            course=course,
-            key=key,
-            defaults={
-                "name": f"Garbage Student {idx}",
-                "email": f"{key}@example.invalid",
-                "is_staff": False,
-            },
-        )
-        students.append(student)
-
-    created_count = 0
-    prepared_count = 0
-    prepare_failed_count = 0
+    students = _create_students(course, args.student_prefix, args.students)
     now = datetime.datetime.now(datetime.timezone.utc)
     run_tag = now.strftime("%y%m%d%H%M%S")
-
-    for exercise in exercises:
-        for s_index, student in enumerate(students):
-            cluster_id = s_index % 8
-            for attempt in range(1, args.submissions_per_student + 1):
-                submission_key = make_unique_submission_key(args.submission_prefix, run_tag)
-                grade = round(rng.uniform(0, 100), 2)
-                submission = Submission.objects.create(
-                    key=submission_key,
-                    aplus_key=None,
-                    exercise=exercise,
-                    student=student,
-                    provider_url=None,
-                    provider_submission_time=now,
-                    grade=grade,
-                    matched=False,
-                    invalid=False,
-                    max_similarity=0.0,
-                )
-                text = build_source_blob(
-                    rng=rng,
-                    cluster_id=cluster_id,
-                    exercise_key=exercise.key,
-                    student_key=student.key,
-                    attempt=attempt,
-                    exercise_index=exercise.id,
-                    student_index=s_index,
-                    output_profile=args.output_profile,
-                )
-                files.put_submission_text(submission, text)
-
-                if should_prepare:
-                    try:
-                        prepare_submission(submission)
-                        prepared_count += 1
-                    except InsertError:
-                        prepare_failed_count += 1
-                    except Exception:
-                        prepare_failed_count += 1
-
-                created_count += 1
+    created_count, prepared_count, prepare_failed_count = _create_submissions(
+        exercises,
+        students,
+        rng,
+        now,
+        run_tag,
+        should_prepare,
+        args.output_profile,
+        args.submission_prefix,
+        args.submissions_per_student,
+    )
 
     if args.run_matching:
         for exercise in exercises:
@@ -446,8 +494,8 @@ def main() -> None:
     print("Done.")
     print(f"Course: {course.key}")
     print(f"Exercises used: {len(exercises)}")
-    if created_exercises:
-        print(f"Exercises created this run: {len(created_exercises)}")
+    if args.create_exercises > 0:
+        print(f"Exercises created this run: {len(create_synthetic_exercises(course, 0, args.exercise_prefix))}")
     print(f"Students created/reused: {len(students)}")
     print(f"Submissions created: {created_count}")
     print(f"Submissions prepared for Radar: {prepared_count}")

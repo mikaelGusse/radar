@@ -1,43 +1,56 @@
-import datetime
-import logging
-import json
-import mimetypes
-import re
-import time
-from urllib.parse import urljoin
 import concurrent.futures
+import csv
+import datetime
+import io
+import json
+import logging
+import mimetypes
+import os
+import re
 import shutil
 import tempfile
+import time
+import zipfile
+from urllib.parse import urljoin
 
+import pytz
+import requests
+from celery.result import AsyncResult
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.core.cache import cache, caches
+from django.core.handlers.wsgi import WSGIRequest
+from django.db.models import Avg, F, Q
+from django.http import FileResponse
+from django.http.response import HttpResponse, HttpResponseBadRequest, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.template import loader as template_loader
 from django.urls import reverse
+from django.utils.decorators import method_decorator
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.timezone import now
-from django.http.response import JsonResponse, HttpResponse, HttpResponseBadRequest
-from django.shortcuts import render, redirect, get_object_or_404
-from django.template import loader as template_loader
-from celery.result import AsyncResult
 from django.views import View
-import requests
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.clickjacking import xframe_options_sameorigin
-from django.utils.decorators import method_decorator
-from django.core.cache import cache, caches
+from kombu import Connection
 
-from django.core.handlers.wsgi import WSGIRequest
-from django.db.models import Avg, Q, F
-
-from data.models import Course, Comparison, Student, Submission, Exercise
 from data import graph
-from radar.config import provider_config, configured_function
+from data.models import Comparison, Course, Exercise, Student, Submission
+from provider.tasks import generate_course_dolos_task, recompare_all
+from radar.celery import app
+from radar.config import configured_function, provider_config
 from radar.settings import (
-    DOLOS_API_SERVER_URL, DOLOS_PROXY_API_URL, DOLOS_PROXY_WEB_URL, DOLOS_WEB_SERVER_URL, CELERY_DEBUG
+    CELERY_DEBUG,
+    DOLOS_API_SERVER_URL,
+    DOLOS_PROXY_API_URL,
+    DOLOS_PROXY_WEB_URL,
+    DOLOS_WEB_SERVER_URL,
 )
 from review.decorators import access_resource
-from review.forms import ExerciseForm, ExerciseTemplateForm, DeleteExerciseFrom
-from review.helpers import handle_async_task, build_clusters_for
 from review.dolos_reports import course_progress_cache_key, dolos_language, write_dataset, zip_dataset
+from review.forms import DeleteExerciseFrom, ExerciseForm, ExerciseTemplateForm
+from review.helpers import build_clusters_for, handle_async_task
+from util.misc import is_ajax
 
 # A pending/PROGRESS course-wide report task older than this is treated as
 # failed: PENDING is Celery's state for both "queued, worker will start
@@ -47,15 +60,6 @@ COURSE_REPORT_STALE_SECONDS = 15 * 60
 # After this long with still no progress at all, show a non-fatal hint so the
 # user knows this isn't normal instead of silently waiting.
 COURSE_REPORT_SLOW_START_HINT_SECONDS = 45
-from util.misc import is_ajax
-import zipfile
-import os
-import csv
-import io
-import re
-import pytz
-from django.http import FileResponse
-from provider.tasks import recompare_all, generate_course_dolos_task
 
 # pylint: disable=no-else-return
 
@@ -984,6 +988,126 @@ def _read_latest_course_report_ids(course, request):
     return []
 
 
+def _build_pending_task_payload(task_id, task_result, started_at=None):
+    """Build the payload for a task that is still pending or in progress."""
+    payload = {"status": "pending", "task_id": task_id}
+    if task_result.info and isinstance(task_result.info, dict):
+        payload.update(task_result.info)
+    try:
+        cached_progress = _course_report_progress_cache().get(_course_report_progress_cache_key(task_id))
+        if isinstance(cached_progress, dict):
+            payload.update(cached_progress)
+    except Exception:
+        pass
+
+    if not started_at:
+        return payload
+
+    elapsed = time.time() - started_at
+    if elapsed > COURSE_REPORT_STALE_SECONDS:
+        return {
+            "status": "failed",
+            "task_id": task_id,
+            "message": (
+                "Report generation has been queued for over %d minutes with no progress. "
+                "This usually means no Celery worker is currently processing the queue. "
+                "Check the worker and try again."
+                % (COURSE_REPORT_STALE_SECONDS // 60)
+            ),
+        }
+    if elapsed > COURSE_REPORT_SLOW_START_HINT_SECONDS and not payload.get("current_exercise"):
+        payload["hint"] = (
+            "Still waiting for a worker to pick this up. If this message persists, "
+            "confirm a Celery worker is running and connected to the broker."
+        )
+    return payload
+
+
+def _build_success_task_payload(task_id, result):
+    """Build the payload for a completed task result."""
+    if not isinstance(result, dict):
+        report_id = result
+        if not report_id:
+            return {
+                "status": "failed",
+                "task_id": task_id,
+                "message": "Report generation returned no report ID. Check logs for details.",
+            }
+        payload = {
+            "status": "ready",
+            "task_id": task_id,
+            "report_id": report_id,
+            "report_url": "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id),
+        }
+        if isinstance(result, dict):
+            payload["submissions_included"] = result.get("submissions_included")
+            payload["submissions_skipped"] = result.get("submissions_skipped")
+            payload["exercises_failed"] = result.get("exercises_failed")
+            notes = []
+            if result.get("submissions_skipped"):
+                notes.append("%d submission(s) skipped (source unavailable)" % result["submissions_skipped"])
+            if result.get("exercises_failed"):
+                notes.append("%d exercise(s) failed entirely" % result["exercises_failed"])
+            payload["message"] = "Report ready." + (" Note: " + ", ".join(notes) + "." if notes else "")
+        return payload
+
+    if "report_ids" not in result:
+        return {
+            "status": "failed",
+            "task_id": task_id,
+            "message": "Report generation returned no report ID. Check logs for details.",
+        }
+
+    report_ids = result.get("report_ids", [])
+    exercises_failed = result.get("exercises_failed", [])
+    if not report_ids and exercises_failed:
+        error_details = []
+        for ex in exercises_failed[:3]:
+            error_details.append(
+                "%s: %s" % (ex.get("name", ex.get("key")), ex.get("error", "Unknown error"))
+            )
+        extra = " (%d more)" % (len(exercises_failed) - 3) if len(exercises_failed) > 3 else ""
+        message = (
+            "All exercises failed to generate reports:"
+            + extra
+            + " "
+            + "; ".join(error_details)
+        )
+        return {
+            "status": "failed",
+            "task_id": task_id,
+            "message": message,
+        }
+
+    if not report_ids:
+        return {
+            "status": "failed",
+            "task_id": task_id,
+            "message": "Report generation returned no report ID. Check logs for details.",
+        }
+
+    report_urls = ["%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, rid) for rid in report_ids]
+    payload = {
+        "status": "ready",
+        "task_id": task_id,
+        "report_ids": report_ids,
+        "report_urls": report_urls,
+        "exercises_processed": result.get("exercises_processed", len(report_ids)),
+        "exercises_total": result.get("exercises_total", len(report_ids)),
+        "exercises_failed": exercises_failed,
+        "submissions_total": result.get("submissions_total", 0),
+    }
+    notes = []
+    if result.get("submissions_skipped"):
+        notes.append("%d submission(s) skipped" % result["submissions_skipped"])
+    if exercises_failed:
+        notes.append("%d exercise(s) failed" % len(exercises_failed))
+    payload["message"] = "Generated %d exercise report(s)." % len(report_ids)
+    if notes:
+        payload["message"] += " Note: " + ", ".join(notes) + "."
+    return payload
+
+
 def _resolve_course_task_status(course, task_id, started_at=None):
     """Resolve a Celery task id into a stable API payload used by both polling
     endpoints and initial page-load status restore.
@@ -994,114 +1118,14 @@ def _resolve_course_task_status(course, task_id, started_at=None):
     apart from "no worker is ever going to pick this up" (both look
     identical to Celery: PENDING).
     """
-    from celery.result import AsyncResult
-    from radar.celery import app
-
     task_result = AsyncResult(task_id, app=app)
     state = task_result.state
 
     if state in ("PENDING", "STARTED", "RETRY", "PROGRESS"):
-        payload = {"status": "pending", "task_id": task_id}
-        if task_result.info and isinstance(task_result.info, dict):
-            payload.update(task_result.info)
-        try:
-            cached_progress = _course_report_progress_cache().get(_course_report_progress_cache_key(task_id))
-            if isinstance(cached_progress, dict):
-                payload.update(cached_progress)
-        except Exception:
-            pass
-
-        if started_at:
-            elapsed = time.time() - started_at
-            if elapsed > COURSE_REPORT_STALE_SECONDS:
-                return {
-                    "status": "failed",
-                    "task_id": task_id,
-                    "message": (
-                        "Report generation has been queued for over %d minutes with no progress. "
-                        "This usually means no Celery worker is currently processing the queue. "
-                        "Check the worker and try again."
-                        % (COURSE_REPORT_STALE_SECONDS // 60)
-                    ),
-                }
-            if elapsed > COURSE_REPORT_SLOW_START_HINT_SECONDS and not payload.get("current_exercise"):
-                payload["hint"] = (
-                    "Still waiting for a worker to pick this up. If this message persists, "
-                    "confirm a Celery worker is running and connected to the broker."
-                )
-        return payload
+        return _build_pending_task_payload(task_id, task_result, started_at=started_at)
 
     if state == "SUCCESS":
-        result = task_result.result
-        # Handle both old single-report format and new multi-report format
-        if isinstance(result, dict):
-            # New format: per-exercise reports
-            if "report_ids" in result:
-                report_ids = result.get("report_ids", [])
-                exercises_failed = result.get("exercises_failed", [])
-                
-                # If all exercises failed, return a clear error message
-                if not report_ids and exercises_failed:
-                    error_details = []
-                    for ex in exercises_failed[:3]:  # Show first 3 errors
-                        error_details.append("%s: %s" % (ex.get("name", ex.get("key")), ex.get("error", "Unknown error")))
-                    extra = " (%d more)" % (len(exercises_failed) - 3) if len(exercises_failed) > 3 else ""
-                    return {
-                        "status": "failed",
-                        "task_id": task_id,
-                        "message": "All exercises failed to generate reports:" + extra + " " + "; ".join(error_details),
-                    }
-                
-                if report_ids:
-                    # Build links to individual exercise reports
-                    report_urls = [
-                        "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, rid)
-                        for rid in report_ids
-                    ]
-                    payload = {
-                        "status": "ready",
-                        "task_id": task_id,
-                        "report_ids": report_ids,
-                        "report_urls": report_urls,
-                        "exercises_processed": result.get("exercises_processed", len(report_ids)),
-                        "exercises_total": result.get("exercises_total", len(report_ids)),
-                        "exercises_failed": exercises_failed,
-                        "submissions_total": result.get("submissions_total", 0),
-                    }
-                    notes = []
-                    if result.get("submissions_skipped"):
-                        notes.append("%d submission(s) skipped" % result["submissions_skipped"])
-                    if exercises_failed:
-                        notes.append("%d exercise(s) failed" % len(exercises_failed))
-                    payload["message"] = "Generated %d exercise report(s)." % len(report_ids)
-                    if notes:
-                        payload["message"] += " Note: " + ", ".join(notes) + "."
-                    return payload
-            # Old format: single report
-            report_id = result.get("report_id") if isinstance(result, dict) else result
-            if report_id:
-                payload = {
-                    "status": "ready",
-                    "task_id": task_id,
-                    "report_id": report_id,
-                    "report_url": "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id),
-                }
-                if isinstance(result, dict):
-                    payload["submissions_included"] = result.get("submissions_included")
-                    payload["submissions_skipped"] = result.get("submissions_skipped")
-                    payload["exercises_failed"] = result.get("exercises_failed")
-                    notes = []
-                    if result.get("submissions_skipped"):
-                        notes.append("%d submission(s) skipped (source unavailable)" % result["submissions_skipped"])
-                    if result.get("exercises_failed"):
-                        notes.append("%d exercise(s) failed entirely" % result["exercises_failed"])
-                    payload["message"] = "Report ready." + (" Note: " + ", ".join(notes) + "." if notes else "")
-                return payload
-        return {
-            "status": "failed",
-            "task_id": task_id,
-            "message": "Report generation returned no report ID. Check logs for details.",
-        }
+        return _build_success_task_payload(task_id, task_result.result)
 
     if state in ("FAILURE", "ERROR", "REVOKED"):
         return {
@@ -1176,7 +1200,6 @@ def generate_course_dolos_async(request, course_key=None, course=None) -> JsonRe
             # Aggressively close all pooled connections
             generate_course_dolos_task.app.pool.force_close_all()
             # Also close any lingering kombu connections in the current thread
-            from kombu import Connection
             try:
                 # Force a fresh connection by creating and immediately closing one
                 with Connection(generate_course_dolos_task.app.conf.broker_url):
@@ -1457,11 +1480,7 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
 
 
 def _dolos_hub_scope(exercise, include_all):
-    """Cheap (query-only) info about an exercise's hub scope: how many
-    submissions match, the cache key for its report, a queryset for
-    total/student counts, and whether staff are excluded. Used by both
-    dolos_hub (to decide whether to show a spinner) and dolos_hub_report (to
-    generate)."""
+    """Cheap (query-only) info about an exercise's hub scope."""
     mode = "all" if include_all else "best"
     selected_count = _exercise_submissions(exercise, include_all).count()
     cache_key = "dolos_report:ex:%d:%s" % (exercise.id, mode)
@@ -1574,19 +1593,8 @@ def _fetch_dolos_pairs_rows(report_id):
     raise RuntimeError("Failed to fetch Dolos pairs data")
 
 
-def _build_course_similarity_summary(course, report_id):
-    """Build pair/group summaries from a course-wide Dolos report.
-
-    Returns dict with:
-    - pair_rows: strongest student pairs ranked by shared exercises
-    - group_rows: connected student groups (size >= 3) using repeated-pair edges
-    - stats: headline counts for quick scanning
-    """
-    rows = _fetch_dolos_pairs_rows(report_id)
-    exercises_by_key = {ex.key: ex for ex in course.exercises.all()}
-    students_by_key = {s.key: s.display_name for s in course.students.all()}
-
-    # (a,b) -> {exercise_key: best_similarity_for_that_exercise}
+def _collect_pair_exercise_scores(rows, exercises_by_key):
+    """Aggregate best similarity scores per student pair and exercise."""
     pair_exercise_scores = {}
     for row in rows:
         left_path = row.get("leftFilePath", "")
@@ -1611,6 +1619,11 @@ def _build_course_similarity_summary(course, report_id):
         if current is None or similarity > current:
             ex_scores[exercise_key] = similarity
 
+    return pair_exercise_scores
+
+
+def _build_pair_rows(pair_exercise_scores, exercises_by_key, students_by_key):
+    """Convert aggregated scores into the pair row payload."""
     pair_rows = []
     for (a_key, b_key), ex_scores in pair_exercise_scores.items():
         if not ex_scores:
@@ -1634,8 +1647,11 @@ def _build_course_similarity_summary(course, report_id):
         key=lambda item: (item["exercise_count"], item["avg_similarity"], item["max_similarity"]),
         reverse=True,
     )
+    return pair_rows
 
-    # Build "group" view from repeated-pair edges (>=2 shared exercises).
+
+def _build_group_rows(pair_rows, students_by_key):
+    """Build connected-group rows from strong pair relationships."""
     edge_threshold = 2
     adjacency = {}
     strong_edges = []
@@ -1650,7 +1666,7 @@ def _build_course_similarity_summary(course, report_id):
 
     visited = set()
     group_rows = []
-    for start in adjacency.keys():
+    for start in adjacency:
         if start in visited:
             continue
         stack = [start]
@@ -1691,6 +1707,24 @@ def _build_course_similarity_summary(course, report_id):
         key=lambda item: (item["size"], item["shared_exercises_score"], item["edge_count"]),
         reverse=True,
     )
+    return group_rows, edge_threshold
+
+
+def _build_course_similarity_summary(course, report_id):
+    """Build pair/group summaries from a course-wide Dolos report.
+
+    Returns dict with:
+    - pair_rows: strongest student pairs ranked by shared exercises
+    - group_rows: connected student groups (size >= 3) using repeated-pair edges
+    - stats: headline counts for quick scanning
+    """
+    rows = _fetch_dolos_pairs_rows(report_id)
+    exercises_by_key = {ex.key: ex for ex in course.exercises.all()}
+    students_by_key = {s.key: s.display_name for s in course.students.all()}
+
+    pair_exercise_scores = _collect_pair_exercise_scores(rows, exercises_by_key)
+    pair_rows = _build_pair_rows(pair_exercise_scores, exercises_by_key, students_by_key)
+    group_rows, edge_threshold = _build_group_rows(pair_rows, students_by_key)
 
     stats = {
         "pairs_total": len(pair_rows),
