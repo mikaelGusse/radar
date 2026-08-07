@@ -151,8 +151,12 @@ class Course(NamespacedApiObject):
         )
         return exercise
 
-    def get_student(self, key_str):
-        student, _ = self.students.get_or_create(key=URLKeyField.safe_version(key_str))
+    def get_student(self, key_str, name=None):
+        student, _ = self.students.get_or_create(key=URLKeyField.safe_version(key_str),
+                                                 defaults={'name': name or ''})
+        if name and student.name != name:
+            student.name = name
+            student.save()
         return student
 
     def __str__(self):

@@ -26,7 +26,7 @@ def load_submission_dir(exercise, path):
     if submission_exists(submission_key):
         logger.info('Skipping existing submission %s', submission_key)
         return None
-    submission = insert_submission(exercise, submission_key, submitter_id)
+    submission = insert_submission(exercise, submission_key, submitter_id, '')
     text = files.join_files(_read_directory(path), tokenizer_config(exercise.tokenizer))
     files.put_submission_text(submission, text)
     prepare_submission(submission)

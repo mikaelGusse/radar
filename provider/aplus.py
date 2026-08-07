@@ -331,6 +331,10 @@ def _decode_students(students):
     return [u["student_id"] if u["student_id"] else u["username"] for u in students]
 
 
+def get_student_names(students):
+    return [u["full_name"] if u["full_name"] else '' for u in students]
+
+
 def _detect_submission_id(request):
     if request.method != "POST" or POST_KEY not in request.POST:
         logger.error("Received invalid request to A+ submission hook")

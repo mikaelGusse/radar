@@ -14,10 +14,10 @@ def submission_exists(submission_key):
     return Submission.objects.filter(key=submission_key).exists()
 
 
-def insert_submission(exercise, submission_key, submitter_id, data=None):
+def insert_submission(exercise, submission_key, submitter_id, submitter_name, data=None):
     if data is None:
         data = {}
-    student = exercise.course.get_student(str(submitter_id))
+    student = exercise.course.get_student(str(submitter_id), name=submitter_name)
     return Submission.objects.create(
         key=submission_key,
         aplus_key=data.get("id"),
