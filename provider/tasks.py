@@ -721,29 +721,13 @@ def _should_include_all_submissions(exercise):
 
 
 def _make_get_text_for_course(course):
-    """Return a closure that fetches submission text using the A+ API."""
-    api_client = aplus.get_api_client(course)
+    """Return a closure that fetches submission text via provider config."""
+    p_config = config_loaders.provider_config(course.provider)
+    get_submission_text = config_loaders.configured_function(
+        p_config, "get_submission_text"
+    )
 
     def get_text(submission):
-        # Fetch the submission content from the A+ API
-        # The submission object should have a URL or ID to fetch from
-        try:
-            # Try to get the submission data from the API
-            # Assuming submission has an 'id' or 'key' attribute
-            submission_id = getattr(submission, 'id', None) or getattr(submission, 'key', None)
-            if not submission_id:
-                raise ValueError("Submission has no id or key")
-
-            # Use the API client to fetch submission data
-            data = api_client.load_data(f"/api/v2/submissions/{submission_id}/")
-            # Return the source code from the submission
-            return data.get('source', '') or data.get('code', '') or ''
-        except Exception as e:
-            logger.warning(
-                "Failed to fetch submission %s: %s",
-                submission.id if hasattr(submission, 'id') else submission,
-                e, exc_info=True
-            )
-            raise
+        return get_submission_text(submission, p_config) or ""
 
     return get_text

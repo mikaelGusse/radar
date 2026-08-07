@@ -10,6 +10,7 @@ from aplus_client.client import AplusTokenClient
 from data.models import URLKeyField
 from provider import tasks
 import matcher.tasks as matcher_tasks
+import radar.config as config_loaders
 from radar.settings import DEBUG, CELERY_DEBUG
 
 
@@ -26,6 +27,41 @@ class AplusProviderError(Exception):
     pass
 
 
+def build_api_url(course, path, config=None):
+    """Return an absolute API URL for a provider path.
+
+    The A+ client used by Radar expects fully qualified URLs for ``load_data``
+    calls. Some callers still pass relative paths (for example
+    ``/api/v2/submissions/123/``), so build the absolute URL from the
+    configured provider host before forwarding the request.
+    """
+    if not path:
+        return path
+    if path.startswith(("http://", "https://")):
+        return path
+
+    host = None
+    if config is not None:
+        host = config.get("host")
+
+    if not host and course is not None:
+        try:
+            host = config_loaders.provider_config(course.provider).get("host")
+        except Exception:
+            logger.debug(
+                "Could not resolve provider host for course %s while building API URL",
+                getattr(course, "key", None),
+                exc_info=True,
+            )
+
+    if not host:
+        return path
+
+    if not path.startswith("/"):
+        path = "/" + path
+    return host.rstrip("/") + path
+
+
 def hook(request, course, config):
     """
     Stores the submission id from A+ for further provider work.
@@ -37,7 +73,7 @@ def hook(request, course, config):
             "Received invalid request to A+ submission hook: invalid submission id."
         )
     # Create submission asynchronously but do not match
-    submission_url = config["host"] + API_SUBMISSION_URL % {"sid": sid}
+    submission_url = build_api_url(course, API_SUBMISSION_URL % {"sid": sid}, config=config)
     tasks.create_submission.delay(sid, course.key, submission_url)
 
 
@@ -51,7 +87,7 @@ def reload(exercise, config):
     exercise.course.similarity_graph_json = ''
     exercise.course.clusters_json = ''
     exercise.course.save()
-    submissions_url = config["host"] + API_SUBMISSION_LIST_URL % {"eid": exercise.key}
+    submissions_url = build_api_url(exercise.course, API_SUBMISSION_LIST_URL % {"eid": exercise.key}, config=config)
     # Queue exercise for asynchronous handling,
     # all submissions to this exercise are created in parallel while matching is sequential
     if not DEBUG or CELERY_DEBUG:
@@ -207,7 +243,7 @@ def load_exercise_template(exercise, config, invalidate_cache=False):
             template_cache.delete(exercise.key)
         else:
             return template_source
-    exercise_url = config["host"] + API_EXERCISE_URL % {"eid": exercise.key}
+    exercise_url = build_api_url(exercise.course, API_EXERCISE_URL % {"eid": exercise.key}, config=config)
     data = get_api_client(exercise.course).load_data(exercise_url)
     if data is None:
         logger.error("A+ API returned None when loading from %s", exercise_url)
