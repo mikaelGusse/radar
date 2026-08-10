@@ -1817,7 +1817,12 @@ def _build_group_pair_rows(course, report_ids, member_keys):
 
     comparison_rows = sorted(
         comparison_rows.values(),
-        key=lambda item: (item["similarity"], item["exercise"].name.lower(), item["left_name"].lower(), item["right_name"].lower()),
+        key=lambda item: (
+            item["similarity"],
+            item["exercise"].name.lower(),
+            item["left_name"].lower(),
+            item["right_name"].lower(),
+        ),
         reverse=True,
     )
     return comparison_rows, load_errors
@@ -2095,12 +2100,24 @@ def dolos_mini_comparison(
     if {left_submission.student.key, right_submission.student.key} != {a_key, b_key}:
         return HttpResponseBadRequest("Submission authors do not match the requested pair")
 
-    cache_key = _mini_dolos_report_cache_key(course.key, exercise.key, left_submission.pk, right_submission.pk)
+    cache_key = _mini_dolos_report_cache_key(
+        course.key,
+        exercise.key,
+        left_submission.pk,
+        right_submission.pk,
+    )
 
     def generate_report():
         return _generate_dolos_report(
             [left_submission, right_submission],
-            _dolos_report_name("%s | %s vs %s" % (exercise.name, left_submission.student.display_name, right_submission.student.display_name)),
+            _dolos_report_name(
+                "%s | %s vs %s"
+                % (
+                    exercise.name,
+                    left_submission.student.display_name,
+                    right_submission.student.display_name,
+                )
+            ),
             dolos_language(exercise.tokenizer),
             label_fn=lambda submission: submission.student.display_name,
         )

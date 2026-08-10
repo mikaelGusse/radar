@@ -86,7 +86,9 @@ urlpatterns = [
         name='student_pair_hub'
     ),
     re_path(
-        r'^(?P<course_key>\w+)/dolos_hub/students/pair/(?P<a_key>\w+)-(?P<b_key>\w+)/mini/(?P<exercise_key>\w+)/(?P<left_submission_id>\d+)-(?P<right_submission_id>\d+)/$',
+        r'^(?P<course_key>\w+)/dolos_hub/students/pair/'
+        r'(?P<a_key>\w+)-(?P<b_key>\w+)/mini/(?P<exercise_key>\w+)/'
+        r'(?P<left_submission_id>\d+)-(?P<right_submission_id>\d+)/$',
         dolos_mini_comparison,
         name='dolos_mini_comparison'
     ),
