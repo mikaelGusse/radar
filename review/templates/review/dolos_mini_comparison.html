@@ -1,0 +1,44 @@
+{% extends 'base_dolos.html' %}
+{% load review %}
+
+{% block head %}
+<style>
+	.mini-wrap { display: flex; flex-direction: column; gap: .9rem; }
+	.mini-head { display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap; }
+	.mini-head h3 { margin: 0; }
+	.mini-head .muted { color: var(--pico-muted-color); font-size: .88rem; }
+	.mini-card { border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); padding: .75rem .9rem; }
+	.mini-card .warning { margin: 0; padding: .7rem .8rem; border-radius: var(--pico-border-radius); border: 1px solid #d8a200; background: #fff6d9; color: #5c4400; }
+	.mini-hero { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: .75rem; }
+	.mini-hero .mini-button { display: inline-block; padding: .6rem .95rem; border-radius: var(--pico-border-radius); background: var(--pico-primary); color: var(--pico-primary-inverse); text-decoration: none; font-weight: 600; }
+	.mini-hero .mini-button.secondary { background: transparent; color: var(--pico-primary); border: 1px solid var(--pico-primary); }
+	.mini-frame { width: 100%; min-height: 75vh; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); }
+	.mini-meta { color: var(--pico-muted-color); font-size: .88rem; }
+	@media (max-width: 900px) {
+		.mini-frame { min-height: 60vh; }
+	}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mini-wrap">
+	{% include 'review/_course_report_panel.html' %}
+
+	<div class="mini-head">
+		<h3>Dolos mini report</h3>
+		{% if similarity is not None %}
+		<span class="muted">Similarity {{ similarity|percent }}</span>
+		{% endif %}
+	</div>
+
+	<div class="mini-card">
+		<div class="mini-hero">
+			{% if comparison_url %}
+			<a class="mini-button secondary" href="{{ comparison_url }}">Open Radar comparison</a>
+			{% endif %}
+			<span class="mini-meta">Report {{ report_id }} for {{ student_a.display_name }} vs {{ student_b.display_name }} in {{ exercise.name }}</span>
+		</div>
+		<iframe class="mini-frame" src="{{ report_url }}" title="Dolos mini report"></iframe>
+	</div>
+</div>
+{% endblock %}

@@ -1122,7 +1122,14 @@ def _resolve_course_task_status(course, task_id, started_at=None):
     state = task_result.state
 
     if state in ("PENDING", "STARTED", "RETRY", "PROGRESS"):
-        return _build_pending_task_payload(task_id, task_result, started_at=started_at)
+        pending_payload = _build_pending_task_payload(task_id, task_result, started_at=started_at)
+        try:
+            cached_progress = _course_report_progress_cache().get(_course_report_progress_cache_key(task_id))
+        except Exception:
+            cached_progress = None
+        if isinstance(cached_progress, dict) and cached_progress.get("report_ids"):
+            return _build_success_task_payload(task_id, cached_progress)
+        return pending_payload
 
     if state == "SUCCESS":
         return _build_success_task_payload(task_id, task_result.result)
@@ -1332,6 +1339,7 @@ def check_course_dolos_task_current(request, course_key=None, course=None) -> Js
     if latest_report_id:
         payload = {
             "status": "ready",
+            "report_id": latest_report_id,
             "report_url": "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, latest_report_id),
             "completed_at": completed_at,
         }
@@ -1552,6 +1560,26 @@ def _exercise_key_from_path(path):
     return parts[-2]
 
 
+def _submission_id_from_path(path):
+    """Recover the submission id from a submission_path() ZIP path."""
+    filename = path.rsplit("/", 1)[-1]
+    stem, _, suffix = filename.rpartition(".")
+    if suffix.lower() != "txt" or "_" not in stem:
+        return None
+    submission_id = stem.rsplit("_", 1)[-1]
+    return submission_id if submission_id.isdigit() else None
+
+
+def _mini_dolos_report_cache_key(course_key, exercise_key, left_submission_id, right_submission_id):
+    ordered_ids = sorted([str(left_submission_id), str(right_submission_id)])
+    return "dolos_report:mini:%s:%s:%s:%s" % (
+        course_key,
+        exercise_key,
+        ordered_ids[0],
+        ordered_ids[1],
+    )
+
+
 def _dolos_pairs_for_student(report_id, student_key):
     """This student's matches in an already-generated report, sourced from
     Dolos's own pairs data (never recomputed by Radar), highest similarity
@@ -1691,9 +1719,12 @@ def _build_group_rows(pair_rows, students_by_key):
         ]
         shared_exercises_score = sum(count for _a, _b, count in component_edges)
         members = sorted(component, key=lambda key: students_by_key.get(key, key).lower())
+        member_keys = sorted(component)
         group_rows.append(
             {
                 "size": len(component),
+                "member_keys": member_keys,
+                "member_slug": "-".join(member_keys),
                 "members": [
                     {"key": key, "name": students_by_key.get(key, key)}
                     for key in members
@@ -1710,17 +1741,109 @@ def _build_group_rows(pair_rows, students_by_key):
     return group_rows, edge_threshold
 
 
-def _build_course_similarity_summary(course, report_id):
-    """Build pair/group summaries from a course-wide Dolos report.
+def _build_group_pair_rows(course, report_ids, member_keys):
+    """Build raw comparison rows for a group-scoped mini Dolos report."""
+    member_keys = [key for key in member_keys if key]
+    member_set = set(member_keys)
+    exercises_by_key = {ex.key: ex for ex in sorted(course.exercises.all(), key=_natural_sort_key)}
+    students_by_key = {s.key: s.display_name for s in course.students.all()}
+
+    comparison_rows = {}
+    load_errors = []
+
+    for report_id in report_ids:
+        try:
+            rows = _fetch_dolos_pairs_rows(report_id)
+        except Exception as exc:
+            logger.exception(
+                "Failed to load Dolos pair rows for group report course=%s report=%s",
+                course.key,
+                report_id,
+            )
+            load_errors.append("%s: %s" % (report_id, exc))
+            continue
+
+        for row in rows:
+            left_path = row.get("leftFilePath", "")
+            right_path = row.get("rightFilePath", "")
+            left_student = _student_key_from_path(left_path)
+            right_student = _student_key_from_path(right_path)
+            if (
+                not left_student
+                or not right_student
+                or left_student == right_student
+                or left_student not in member_set
+                or right_student not in member_set
+            ):
+                continue
+
+            exercise_key = _exercise_key_from_path(left_path) or _exercise_key_from_path(right_path)
+            exercise = exercises_by_key.get(exercise_key)
+            if exercise is None:
+                continue
+
+            try:
+                similarity = float(row.get("similarity", 0))
+            except (TypeError, ValueError):
+                continue
+
+            left_submission_id = _submission_id_from_path(left_path)
+            right_submission_id = _submission_id_from_path(right_path)
+            if not left_submission_id or not right_submission_id:
+                continue
+
+            pair_key = tuple(sorted((left_student, right_student)))
+            row_key = (exercise_key, tuple(sorted((left_path, right_path))))
+            current = comparison_rows.get(row_key)
+            if current is None or similarity > current["similarity"]:
+                comparison_rows[row_key] = {
+                    "exercise": exercise,
+                    "similarity": similarity,
+                    "report_id": report_id,
+                    "left_submission_id": left_submission_id,
+                    "right_submission_id": right_submission_id,
+                    "left_key": left_student,
+                    "right_key": right_student,
+                    "left_name": students_by_key.get(left_student, left_student),
+                    "right_name": students_by_key.get(right_student, right_student),
+                    "left_path": left_path,
+                    "right_path": right_path,
+                    "pair_key": pair_key,
+                    "pair_url": reverse(
+                        "student_pair_hub",
+                        kwargs={"course_key": course.key, "a_key": pair_key[0], "b_key": pair_key[1]},
+                    ),
+                }
+
+    comparison_rows = sorted(
+        comparison_rows.values(),
+        key=lambda item: (item["similarity"], item["exercise"].name.lower(), item["left_name"].lower(), item["right_name"].lower()),
+        reverse=True,
+    )
+    return comparison_rows, load_errors
+
+
+def _build_course_similarity_summary(course, report_ids):
+    """Build pair/group summaries from a course-wide Dolos report set.
 
     Returns dict with:
     - pair_rows: strongest student pairs ranked by shared exercises
     - group_rows: connected student groups (size >= 3) using repeated-pair edges
     - stats: headline counts for quick scanning
     """
-    rows = _fetch_dolos_pairs_rows(report_id)
     exercises_by_key = {ex.key: ex for ex in course.exercises.all()}
     students_by_key = {s.key: s.display_name for s in course.students.all()}
+
+    rows = []
+    for report_id in report_ids:
+        try:
+            rows.extend(_fetch_dolos_pairs_rows(report_id))
+        except Exception:
+            logger.exception(
+                "Failed to load Dolos pair rows for course summary course=%s report=%s",
+                course.key,
+                report_id,
+            )
 
     pair_exercise_scores = _collect_pair_exercise_scores(rows, exercises_by_key)
     pair_rows = _build_pair_rows(pair_exercise_scores, exercises_by_key, students_by_key)
@@ -1791,16 +1914,27 @@ def students_hub(request, course_key=None, course=None) -> HttpResponse:
         return redirect("students_view", course_key=course.key)
 
     latest_course_report_id, latest_completed_at = _read_latest_course_report(course, request)
+    latest_course_report_ids = _read_latest_course_report_ids(course, request)
+    course_report_task_status = _current_course_report_status(course, request)
+
+    if not latest_course_report_ids and isinstance(course_report_task_status, dict):
+        task_report_ids = course_report_task_status.get("report_ids") or []
+        task_report_id = course_report_task_status.get("report_id")
+        if task_report_ids or task_report_id:
+            latest_course_report_ids = [rid for rid in (task_report_ids or [task_report_id]) if rid]
+            latest_course_report_id = latest_course_report_id or latest_course_report_ids[0]
+            latest_completed_at = latest_completed_at or course_report_task_status.get("completed_at")
+
     summary = None
     summary_error = None
-    if latest_course_report_id:
+    if latest_course_report_ids:
         try:
-            summary = _build_course_similarity_summary(course, latest_course_report_id)
+            summary = _build_course_similarity_summary(course, latest_course_report_ids)
         except Exception as exc:
             logger.exception(
-                "Failed to build course similarity summary for course=%s report=%s",
+                "Failed to build course similarity summary for course=%s reports=%s",
                 course.key,
-                latest_course_report_id,
+                latest_course_report_ids,
             )
             summary_error = str(exc)
 
@@ -1819,7 +1953,7 @@ def students_hub(request, course_key=None, course=None) -> HttpResponse:
             "course_report_completed_at": latest_completed_at,
             "course_report_summary": summary,
             "course_report_summary_error": summary_error,
-            "course_report_task_status": _current_course_report_status(course, request),
+            "course_report_task_status": course_report_task_status,
         },
     )
 
@@ -1833,6 +1967,7 @@ def student_pair_hub(request, course_key=None, a_key=None, b_key=None, course=No
     latest_report_ids = _read_latest_course_report_ids(course, request)
     exercises_by_key = {ex.key: ex for ex in sorted(course.exercises.all(), key=_natural_sort_key)}
     pair_exercise_scores = {}
+    pair_exercise_rows = {}
     load_errors = []
 
     if latest_report_ids:
@@ -1867,21 +2002,48 @@ def student_pair_hub(request, course_key=None, a_key=None, b_key=None, course=No
                 except (TypeError, ValueError):
                     continue
 
+                left_submission_id = _submission_id_from_path(left_path)
+                right_submission_id = _submission_id_from_path(right_path)
+                if not left_submission_id or not right_submission_id:
+                    continue
+
                 current = pair_exercise_scores.get(exercise_key)
                 if current is None or similarity > current["similarity"]:
                     pair_exercise_scores[exercise_key] = {
                         "exercise": exercise,
                         "similarity": similarity,
                         "report_id": report_id,
+                        "left_submission_id": left_submission_id,
+                        "right_submission_id": right_submission_id,
                         "left_path": left_path,
                         "right_path": right_path,
                     }
+
+                pair_exercise_rows.setdefault(exercise_key, []).append(
+                    {
+                        "exercise": exercise,
+                        "similarity": similarity,
+                        "report_id": report_id,
+                        "left_submission_id": left_submission_id,
+                        "right_submission_id": right_submission_id,
+                        "left_path": left_path,
+                        "right_path": right_path,
+                    }
+                )
 
     pair_rows = sorted(
         pair_exercise_scores.values(),
         key=lambda item: (item["similarity"], item["exercise"].name.lower()),
         reverse=True,
     )
+
+    for row in pair_rows:
+        exercise_key = row["exercise"].key
+        row["comparison_rows"] = sorted(
+            pair_exercise_rows.get(exercise_key, []),
+            key=lambda item: item["similarity"],
+            reverse=True,
+        )
 
     return render(
         request,
@@ -1898,6 +2060,167 @@ def student_pair_hub(request, course_key=None, a_key=None, b_key=None, course=No
             "student_b": student_b,
             "latest_report_ids": latest_report_ids,
             "pair_rows": pair_rows,
+            "load_errors": load_errors,
+            "course_report_task_status": _current_course_report_status(course, request),
+        },
+    )
+
+
+@access_resource
+def dolos_mini_comparison(
+    request,
+    course_key=None,
+    a_key=None,
+    b_key=None,
+    exercise_key=None,
+    left_submission_id=None,
+    right_submission_id=None,
+    course=None,
+    exercise=None,
+):
+    """Open an exact Dolos mini comparison by showing the two submissions."""
+    left_submission = get_object_or_404(
+        Submission,
+        pk=left_submission_id,
+        exercise=exercise,
+        student__course=course,
+    )
+    right_submission = get_object_or_404(
+        Submission,
+        pk=right_submission_id,
+        exercise=exercise,
+        student__course=course,
+    )
+
+    if {left_submission.student.key, right_submission.student.key} != {a_key, b_key}:
+        return HttpResponseBadRequest("Submission authors do not match the requested pair")
+
+    cache_key = _mini_dolos_report_cache_key(course.key, exercise.key, left_submission.pk, right_submission.pk)
+
+    def generate_report():
+        return _generate_dolos_report(
+            [left_submission, right_submission],
+            _dolos_report_name("%s | %s vs %s" % (exercise.name, left_submission.student.display_name, right_submission.student.display_name)),
+            dolos_language(exercise.tokenizer),
+            label_fn=lambda submission: submission.student.display_name,
+        )
+
+    try:
+        report_id = _cached_report_id(cache_key, generate_report)
+    except Exception as exc:
+        logger.exception(
+            "Failed to build mini Dolos report for course=%s exercise=%s submissions=%s/%s",
+            course.key,
+            exercise.key,
+            left_submission.pk,
+            right_submission.pk,
+        )
+        return HttpResponseBadRequest("Could not build mini Dolos report: %s" % exc)
+
+    if not report_id:
+        return HttpResponse("Need at least two submissions to build a mini Dolos report")
+
+    report_url = "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id)
+
+    comparison = Comparison.objects.filter(
+        submission_a=left_submission,
+        submission_b=right_submission,
+    ).select_related(
+        "submission_a",
+        "submission_b",
+        "submission_a__exercise",
+        "submission_b__exercise",
+        "submission_a__student",
+        "submission_b__student",
+    ).first()
+    if comparison is None:
+        comparison = Comparison.objects.filter(
+            submission_a=right_submission,
+            submission_b=left_submission,
+        ).select_related(
+            "submission_a",
+            "submission_b",
+            "submission_a__exercise",
+            "submission_b__exercise",
+            "submission_a__student",
+            "submission_b__student",
+        ).first()
+
+    comparison_url = None
+    if comparison is not None:
+        comparison_url = reverse(
+            "comparison",
+            kwargs={
+                "course_key": course.key,
+                "exercise_key": exercise.key,
+                "ak": comparison.submission_a.student.key,
+                "bk": comparison.submission_b.student.key,
+                "ck": comparison.pk,
+            },
+        )
+
+    return render(
+        request,
+        "review/dolos_mini_comparison.html",
+        {
+            "hierarchy": (
+                (settings.APP_NAME, reverse("index")),
+                (course.name, reverse("course", kwargs={"course_key": course.key})),
+                ("Students", reverse("students_hub", kwargs={"course_key": course.key})),
+                ("Mini comparison", None),
+            ),
+            "course": course,
+            "exercise": exercise,
+            "student_a": left_submission.student,
+            "student_b": right_submission.student,
+            "submission_a": left_submission,
+            "submission_b": right_submission,
+            "similarity": comparison.similarity if comparison else None,
+            "comparison": comparison,
+            "report_id": report_id,
+            "report_url": report_url,
+            "open_report_url": report_url,
+            "comparison_url": comparison_url,
+        },
+    )
+
+
+@access_resource
+def student_group_hub(request, course_key=None, member_keys=None, course=None) -> HttpResponse:
+    """New Radar: show a mini Dolos report for one detected student group."""
+    if request.session.get("legacy_radar", True):
+        return redirect("students_view", course_key=course.key)
+
+    raw_member_keys = [key for key in (member_keys or "").split("-") if key]
+    if len(raw_member_keys) < 3:
+        return HttpResponseBadRequest("A group report needs at least 3 students")
+
+    group_students = []
+    for key in raw_member_keys:
+        group_students.append(get_object_or_404(Student, course=course, key=key))
+
+    resolved_member_keys = [student.key for student in group_students]
+    latest_report_ids = _read_latest_course_report_ids(course, request)
+    comparison_rows = []
+    load_errors = []
+
+    if latest_report_ids:
+        comparison_rows, load_errors = _build_group_pair_rows(course, latest_report_ids, resolved_member_keys)
+
+    return render(
+        request,
+        "review/student_group_hub.html",
+        {
+            "hierarchy": (
+                (settings.APP_NAME, reverse("index")),
+                (course.name, reverse("course", kwargs={"course_key": course.key})),
+                ("Students", reverse("students_hub", kwargs={"course_key": course.key})),
+                ("Group report", None),
+            ),
+            "course": course,
+            "group_students": group_students,
+            "latest_report_ids": latest_report_ids,
+            "comparison_rows": comparison_rows,
             "load_errors": load_errors,
             "course_report_task_status": _current_course_report_status(course, request),
         },

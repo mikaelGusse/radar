@@ -182,90 +182,38 @@
 		stopPolling();
 	}
 
-	function escapeHtml(text) {
-		return String(text || '')
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;')
-			.replace(/"/g, '&quot;')
-			.replace(/'/g, '&#39;');
-	}
-
-	function renderReadyReports(data) {
-		if (!data) {
+	function reloadOnceForReport(data) {
+		if (!window.sessionStorage) {
+			window.location.reload();
 			return;
 		}
 
-		var urls = [];
-		if (Array.isArray(data.report_urls) && data.report_urls.length > 0) {
-			urls = data.report_urls;
-		} else if (data.report_url) {
-			urls = [data.report_url];
+		var reportIds = [];
+		if (Array.isArray(data.report_ids) && data.report_ids.length > 0) {
+			reportIds = data.report_ids;
+		} else if (data.report_id) {
+			reportIds = [data.report_id];
 		}
-
-		if (!urls.length) {
+		var reloadKey = 'course_report_reloaded:' + reportIds.join(',');
+		if (!reportIds.length || window.sessionStorage.getItem(reloadKey)) {
 			return;
 		}
-
-		var container = el('hubCourseReportResults');
-		if (!container) {
-			var progress = el('hubCourseProgress');
-			if (!progress || !progress.parentNode) {
-				return;
-			}
-			container = document.createElement('div');
-			container.id = 'hubCourseReportResults';
-			progress.parentNode.insertBefore(container, progress.nextSibling);
-		}
-
-		var html = [];
-		html.push('<div class="hub-multi-report">');
-		html.push('<p><strong>Course-wide report created:</strong> ' + urls.length + ' exercise report(s) generated.</p>');
-		html.push('<p>Open the Students view to inspect cross-exercise similarities.</p>');
-
-		if (Array.isArray(data.exercises_failed) && data.exercises_failed.length > 0) {
-			html.push('<article class="warning">');
-			html.push('<strong>' + data.exercises_failed.length + ' exercise(s) failed to generate:</strong>');
-			html.push('<ul>');
-			for (var j = 0; j < data.exercises_failed.length; j++) {
-				var failed = data.exercises_failed[j] || {};
-				html.push('<li>' + escapeHtml(failed.name || failed.key || 'Unknown exercise') + ': ' + escapeHtml(failed.error || 'Unknown error') + '</li>');
-			}
-			html.push('</ul>');
-			html.push('</article>');
-		}
-
-		html.push('</div>');
-		container.innerHTML = html.join('');
+		window.sessionStorage.setItem(reloadKey, '1');
+		window.location.reload();
 	}
 
 	function showReady(data) {
 		var progress = el('hubCourseProgress');
-		var text = el('hubCourseProgressText');
 		var btn = el('generateCourseBtn');
 		if (progress) {
-			progress.classList.add('active');
-		}
-		if (text) {
-			text.classList.remove('status-error');
-			// Handle multiple report IDs (per-exercise reports)
-			if (data.report_ids && data.report_ids.length > 0) {
-				var total = data.exercises_processed || data.report_ids.length;
-				text.textContent = 'Course report ready (' + total + ' exercise reports generated).';
-			} else if (data.message) {
-				text.textContent = data.message;
-			} else {
-				text.textContent = 'Course-wide report ready.';
-			}
+			progress.classList.remove('active');
 		}
 		setHint(null);
 		setCourseMeta(data && data.completed_at);
-		setProgressBar(data || null);
 		setBusy(false);
 		if (btn) {
 			btn.textContent = 'Generate Course Report';
 		}
-		renderReadyReports(data);
 		stopPolling();
 	}
 
@@ -319,6 +267,7 @@
 			.then(function (data) {
 				if (data.status === 'ready') {
 					showReady(data);
+					reloadOnceForReport(data);
 				} else if (data.status === 'failed') {
 					showFailure(data.message);
 				} else if (data.status === 'pending') {
@@ -352,8 +301,8 @@
 					}
 					startPolling();
 				} else if (data.status === 'ready') {
-					setCourseMeta(data.completed_at);
-					setBusy(false);
+					showReady(data);
+					reloadOnceForReport(data);
 				} else if (data.status === 'failed') {
 					showFailure(data.message);
 				}

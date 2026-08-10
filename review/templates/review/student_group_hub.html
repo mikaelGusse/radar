@@ -1,0 +1,98 @@
+{% extends 'base_dolos.html' %}
+{% load review %}
+
+{% block head %}
+<style>
+	.group-wrap { display: flex; flex-direction: column; gap: .9rem; }
+	.group-head { display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap; }
+	.group-head h3 { margin: 0; }
+	.group-head .muted { color: var(--pico-muted-color); font-size: .88rem; }
+	.group-card { border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); padding: .75rem .9rem; }
+	.group-card .warning { margin: 0; padding: .7rem .8rem; border-radius: var(--pico-border-radius); border: 1px solid #d8a200; background: #fff6d9; color: #5c4400; }
+	.group-table { width: 100%; border-collapse: collapse; }
+	.group-table th, .group-table td { padding: .48rem .52rem; text-align: left; border-bottom: 1px solid var(--pico-muted-border-color); vertical-align: top; }
+	.group-table th { font-size: .8rem; color: var(--pico-muted-color); font-weight: 600; }
+	.group-members { display: flex; flex-wrap: wrap; gap: .35rem .55rem; }
+	.group-members a { text-decoration: none; }
+	.muted { color: var(--pico-muted-color); }
+	.exercise-list { margin: .35rem 0 0; padding-left: 1rem; }
+	.exercise-list li { margin-bottom: .25rem; }
+	.exercise-list a { text-decoration: none; }
+	.exercise-list .mini-open { display: inline-block; padding: .3rem .55rem; border-radius: var(--pico-border-radius); background: var(--pico-primary); color: var(--pico-primary-inverse); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="group-wrap">
+	{% include 'review/_course_report_panel.html' %}
+
+	<div class="group-head">
+		<h3>Group mini report</h3>
+		{% if latest_report_ids %}
+		<span class="muted">Filtered from {{ latest_report_ids|length }} course report(s)</span>
+		{% else %}
+		<span class="muted">No course-wide report found yet</span>
+		{% endif %}
+	</div>
+
+	<div class="group-card">
+		<div class="group-members">
+			{% for member in group_students %}
+			<a href="{% url 'student_hub' course_key=course.key student_key=member.key %}">{{ member.display_name }}</a>
+			{% endfor %}
+		</div>
+	</div>
+
+	{% if load_errors %}
+	<div class="group-card warning">
+		<strong>Some report data could not be loaded.</strong>
+		<ul>
+			{% for error in load_errors %}
+			<li>{{ error }}</li>
+			{% endfor %}
+		</ul>
+	</div>
+	{% endif %}
+
+	{% if not latest_report_ids %}
+	<article class="group-card">Generate a course-wide report first to inspect group similarities.</article>
+	{% elif not comparison_rows %}
+	<article class="group-card">No similarities found between these students in the latest course report(s).</article>
+	{% else %}
+	<div class="group-card">
+		<table class="group-table">
+			<thead>
+				<tr>
+					<th>Exercise</th>
+					<th>Students</th>
+					<th>Similarity</th>
+					<th>Source pair</th>
+					<th>Pair summary</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for row in comparison_rows %}
+				<tr>
+					<td>
+						<a href="{% url 'dolos_hub_exercise' course_key=course.key exercise_key=row.exercise.key %}">{{ row.exercise.name }}</a>
+					</td>
+					<td>
+						<a href="{% url 'student_hub' course_key=course.key student_key=row.left_key %}">{{ row.left_name }}</a>
+						and
+						<a href="{% url 'student_hub' course_key=course.key student_key=row.right_key %}">{{ row.right_name }}</a>
+					</td>
+					<td>{{ row.similarity|percent }}</td>
+					<td>
+						<span class="muted">{{ row.left_path }} vs {{ row.right_path }}</span>
+					</td>
+					<td>
+						<a class="mini-open" href="{% url 'dolos_mini_comparison' course_key=course.key a_key=row.left_key b_key=row.right_key exercise_key=row.exercise.key left_submission_id=row.left_submission_id right_submission_id=row.right_submission_id %}">Open Dolos report</a>
+					</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+	{% endif %}
+</div>
+{% endblock %}

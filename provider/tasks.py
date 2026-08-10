@@ -679,13 +679,22 @@ def generate_course_dolos_task(self, course_key):
             report_ids=[r["report_id"] for r in report_results],
         )
 
-        return {
+        final_result = {
             "report_ids": [r["report_id"] for r in report_results],
             "exercises_processed": len(report_results),
             "exercises_total": total_exercises,
             "exercises_failed": failed_exercises,
             "submissions_total": sum(r["submissions_included"] for r in report_results),
         }
+        try:
+            caches["course_report_progress"].set(
+                course_progress_cache_key(self.request.id),
+                final_result,
+                60 * 60,
+            )
+        except Exception:
+            logger.warning("Failed to persist final course report payload", exc_info=True)
+        return final_result
 
     except CourseReportError:
         raise

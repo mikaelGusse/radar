@@ -36,9 +36,7 @@ sync between the two pages again.
 	<p class="status-hint" id="hubCourseProgressHint" style="display:none;">{{ course_report_task_status.hint }}</p>
 </div>
 
-<div id="hubCourseReportResults"></div>
-
-<script src="{% static 'course_report.js' %}?v=20260729b"
+<script src="{% static 'course_report.js' %}?v=20260810b"
 	data-generate-url="{% url 'generate_course_dolos_async' course_key=course.key %}"
 	data-check-url-template="{% url 'check_course_dolos_task' course_key=course.key task_id='__TASK__' %}"
 	data-check-current-url="{% url 'check_course_dolos_task_current' course_key=course.key %}"></script>
