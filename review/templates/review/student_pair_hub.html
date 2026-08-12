@@ -12,6 +12,9 @@
 	.pair-table { width: 100%; border-collapse: collapse; }
 	.pair-table th, .pair-table td { padding: .48rem .52rem; text-align: left; border-bottom: 1px solid var(--pico-muted-border-color); vertical-align: top; }
 	.pair-table th { font-size: .8rem; color: var(--pico-muted-color); font-weight: 600; }
+	.mini-comparisons { display: flex; flex-direction: column; gap: .35rem; }
+	.mini-comparisons a { display: inline-block; width: fit-content; padding: .35rem .65rem; border-radius: var(--pico-border-radius); background: var(--pico-primary); color: var(--pico-primary-inverse); text-decoration: none; }
+	.mini-comparisons .meta { color: var(--pico-muted-color); font-size: .82rem; }
 	.muted { color: var(--pico-muted-color); }
 </style>
 {% endblock %}
@@ -51,7 +54,7 @@
 				<tr>
 					<th>Exercise</th>
 					<th>Best Similarity</th>
-					<th>Source Pair</th>
+					<th>Mini comparisons</th>
 					<th>Open</th>
 				</tr>
 			</thead>
@@ -60,7 +63,16 @@
 				<tr>
 					<td>{{ row.exercise.name }}</td>
 					<td>{{ row.similarity|percent }}</td>
-					<td><span class="muted">{{ row.left_path }} vs {{ row.right_path }}</span></td>
+					<td>
+						<div class="mini-comparisons">
+							{% for comparison in row.comparison_rows %}
+							<a href="{% url 'dolos_mini_comparison' course_key=course.key a_key=student_a.key b_key=student_b.key exercise_key=row.exercise.key left_submission_id=comparison.left_submission_id right_submission_id=comparison.right_submission_id %}">
+								Open Dolos report {{ comparison.similarity|percent }}
+							</a>
+							<div class="meta">{{ comparison.left_path }} vs {{ comparison.right_path }}</div>
+							{% endfor %}
+						</div>
+					</td>
 					<td>
 						<a href="{% url 'dolos_hub_exercise' course_key=course.key exercise_key=row.exercise.key %}">Exercise report</a>
 					</td>

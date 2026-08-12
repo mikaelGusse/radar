@@ -590,6 +590,17 @@ def _make_course_report_progress_callback(
     return progress_callback
 
 
+def _report_course_progress(task, progress_cache_key, **payload):
+    try:
+        caches["course_report_progress"].set(progress_cache_key, payload, 60 * 60)
+    except Exception:
+        logger.warning("Failed to persist course report progress", exc_info=True)
+    try:
+        task.update_state(state="PROGRESS", meta=payload)
+    except Exception:
+        logger.warning("Failed to update task state for course report progress", exc_info=True)
+
+
 @celery.shared_task(
     bind=True,
     name="provider.tasks.generate_course_dolos_task",
@@ -610,14 +621,7 @@ def generate_course_dolos_task(self, course_key):
     progress_cache_key = course_progress_cache_key(self.request.id)
 
     def report_progress(**payload):
-        try:
-            caches["course_report_progress"].set(progress_cache_key, payload, 60 * 60)
-        except Exception:
-            logger.warning("Failed to persist course report progress", exc_info=True)
-        try:
-            self.update_state(state="PROGRESS", meta=payload)
-        except Exception:
-            logger.warning("Failed to update task state for course report progress", exc_info=True)
+        _report_course_progress(self, progress_cache_key, **payload)
 
     exercises = _deduplicate_exercises(course.exercises.select_related("course").all())
     total_exercises = len(exercises)
@@ -679,13 +683,22 @@ def generate_course_dolos_task(self, course_key):
             report_ids=[r["report_id"] for r in report_results],
         )
 
-        return {
+        final_result = {
             "report_ids": [r["report_id"] for r in report_results],
             "exercises_processed": len(report_results),
             "exercises_total": total_exercises,
             "exercises_failed": failed_exercises,
             "submissions_total": sum(r["submissions_included"] for r in report_results),
         }
+        try:
+            caches["course_report_progress"].set(
+                course_progress_cache_key(self.request.id),
+                final_result,
+                60 * 60,
+            )
+        except Exception:
+            logger.warning("Failed to persist final course report payload", exc_info=True)
+        return final_result
 
     except CourseReportError:
         raise

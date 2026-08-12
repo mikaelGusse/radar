@@ -105,6 +105,7 @@
 						<th>Size</th>
 						<th>Strong Pair Edges</th>
 						<th>Shared-Exercise Score</th>
+						<th>Mini report</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -120,9 +121,12 @@
 						<td>{{ group.size }}</td>
 						<td>{{ group.edge_count }}</td>
 						<td>{{ group.shared_exercises_score }}</td>
+						<td>
+							<a href="{% url 'student_group_hub' course_key=course.key member_keys=group.member_slug %}">Open mini report</a>
+						</td>
 					</tr>
 					{% empty %}
-					<tr><td colspan="4" class="muted">No 3+ student groups at the current threshold.</td></tr>
+					<tr><td colspan="5" class="muted">No 3+ student groups at the current threshold.</td></tr>
 					{% endfor %}
 				</tbody>
 			</table>

@@ -33,6 +33,8 @@ from review.views import (
     students_hub,
     student_pair_hub,
     student_hub,
+    student_group_hub,
+    dolos_mini_comparison,
     toggle_radar_mode,
 )
 
@@ -82,6 +84,18 @@ urlpatterns = [
         r'^(?P<course_key>\w+)/dolos_hub/students/pair/(?P<a_key>\w+)-(?P<b_key>\w+)/$',
         student_pair_hub,
         name='student_pair_hub'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/students/pair/'
+        r'(?P<a_key>\w+)-(?P<b_key>\w+)/mini/(?P<exercise_key>\w+)/'
+        r'(?P<left_submission_id>\d+)-(?P<right_submission_id>\d+)/$',
+        dolos_mini_comparison,
+        name='dolos_mini_comparison'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/students/group/(?P<member_keys>[\w-]+)/$',
+        student_group_hub,
+        name='student_group_hub'
     ),
     re_path(
         r'^(?P<course_key>\w+)/dolos_hub/(?P<exercise_key>\w+)/$',
