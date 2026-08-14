@@ -1,6 +1,7 @@
 import concurrent.futures
 import csv
 import datetime
+import functools
 import io
 import json
 import logging
@@ -20,7 +21,7 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache, caches
 from django.core.handlers.wsgi import WSGIRequest
-from django.db.models import Avg, F, Q
+from django.db.models import Avg, F, OuterRef, Q, Subquery
 from django.http import FileResponse
 from django.http.response import HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -32,10 +33,11 @@ from django.utils.timezone import now
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.clickjacking import xframe_options_sameorigin
+from django.views.decorators.http import require_POST
 from kombu import Connection
 
 from data import graph
-from data.models import Comparison, Course, Exercise, Student, Submission
+from data.models import Comparison, Course, Exercise, ExerciseDolosReport, Student, Submission
 from provider.tasks import generate_course_dolos_task, recompare_all
 from radar.celery import app
 from radar.config import configured_function, provider_config
@@ -47,7 +49,12 @@ from radar.settings import (
     DOLOS_WEB_SERVER_URL,
 )
 from review.decorators import access_resource
-from review.dolos_reports import course_progress_cache_key, dolos_language, write_dataset, zip_dataset
+from review.dolos_reports import (
+    course_progress_cache_key,
+    dolos_language,
+    write_dataset,
+    zip_dataset,
+)
 from review.forms import DeleteExerciseFrom, ExerciseForm, ExerciseTemplateForm
 from review.helpers import build_clusters_for, handle_async_task
 from util.misc import is_ajax
@@ -725,10 +732,19 @@ def _make_get_text():
     return get_text
 
 
-def _exercise_submissions(exercise, include_all=False):
+def _exercise_submissions(exercise, include_all=False, newest=None):
     """Submissions to feed Dolos: best-per-student by default, or every valid one
     (several per student) when include_all. Staff excluded unless opted in."""
-    subs = exercise.valid_submissions if include_all else exercise.best_submissions
+    if newest:
+        newest_ids = (
+            exercise.valid_submissions
+            .filter(student=OuterRef("student"))
+            .order_by("-provider_submission_time", "-id")
+            .values("id")[:newest]
+        )
+        subs = exercise.valid_submissions.filter(id__in=Subquery(newest_ids))
+    else:
+        subs = exercise.valid_submissions if include_all else exercise.best_submissions
     if not exercise.use_staff_submissions:
         subs = subs.exclude(student__is_staff=True)
     # write_dataset/submission_path touch submission.student and
@@ -834,18 +850,31 @@ def _cached_report_id(cache_key, generate):
     return report_id
 
 
-def _too_few_message(selected_count, include_all, total, students, staff_excluded):
+def _too_few_message(selected_count, include_all, total, students, staff_excluded, newest=None):
     """Explain why Dolos has fewer than two files to compare."""
-    mode = "all submissions" if include_all else "best submission per student"
+    if newest:
+        mode = "%d newest submissions per student" % newest
+    else:
+        mode = "all submissions" if include_all else "best submission per student"
     msg = (
         "Dolos needs at least 2 files to compare, but only %d matched the current "
         "filter (%s). This exercise has %d submission(s) from %d student(s)%s."
         % (selected_count, mode, total, students,
            " with staff excluded" if staff_excluded else "")
     )
-    if not include_all and total >= 2:
+    if not include_all and not newest and total >= 2:
         msg += " Switch to \u201cAll submissions\u201d above to include every submission."
     return msg
+
+
+def _newest_submission_count(request):
+    value = request.GET.get("newest")
+    if not value:
+        return None
+    try:
+        return max(1, min(int(value), 100))
+    except ValueError:
+        return None
 
 
 def _course_report_task_cache_key(course):
@@ -901,6 +930,10 @@ def _course_report_latest_ids_cache_key(course):
 
 def _course_report_latest_ids_session_key(course):
     return "dolos_course_report_ids_%d" % course.id
+
+
+def _course_report_reused_session_key(course):
+    return "dolos_course_reports_reused_%d" % course.id
 
 
 def _store_latest_course_report(course, report_id, completed_at, report_ids=None):
@@ -1096,6 +1129,8 @@ def _build_success_task_payload(task_id, result):
         "exercises_total": result.get("exercises_total", len(report_ids)),
         "exercises_failed": exercises_failed,
         "submissions_total": result.get("submissions_total", 0),
+        "reports_reused": result.get("reports_reused", 0),
+        "reports_generated": result.get("reports_generated", len(report_ids)),
     }
     notes = []
     if result.get("submissions_skipped"):
@@ -1192,7 +1227,7 @@ def generate_course_dolos_async(request, course_key=None, course=None) -> JsonRe
     _clear_latest_course_report(course, request)
 
     try:
-        task = generate_course_dolos_task.delay(course_key)
+        task = generate_course_dolos_task.delay(course_key, force=force)
     except Exception as first_exc:
         # A broker/channel error (e.g. RabbitMQ closing a channel after a
         # previous task held it too long) can leave a broken connection
@@ -1213,7 +1248,7 @@ def generate_course_dolos_async(request, course_key=None, course=None) -> JsonRe
                     pass
             except Exception:
                 pass  # Ignore errors during cleanup
-            task = generate_course_dolos_task.delay(course_key)
+            task = generate_course_dolos_task.delay(course_key, force=force)
         except Exception as exc:
             logger.exception("Failed to queue course-wide Dolos report for %s", course_key)
             return JsonResponse({
@@ -1226,6 +1261,7 @@ def generate_course_dolos_async(request, course_key=None, course=None) -> JsonRe
 
     request.session[_course_report_task_session_key(course)] = task.id
     request.session[_course_report_started_session_key(course)] = time.time()
+    request.session.pop(_course_report_reused_session_key(course), None)
     request.session.save()
 
     progress_payload = None
@@ -1273,6 +1309,7 @@ def check_course_dolos_task(request, course_key=None, task_id=None, course=None)
         request.session[_course_report_latest_session_key(course)] = primary_report_id
         request.session[_course_report_completed_session_key(course)] = completed_at
         request.session[_course_report_latest_ids_session_key(course)] = report_ids or [primary_report_id]
+        request.session[_course_report_reused_session_key(course)] = payload.get("reports_reused", 0)
         _store_latest_course_report(
             course,
             primary_report_id,
@@ -1317,6 +1354,9 @@ def check_course_dolos_task_current(request, course_key=None, course=None) -> Js
             request.session[_course_report_latest_session_key(course)] = primary_report_id
             request.session[_course_report_completed_session_key(course)] = completed_at
             request.session[_course_report_latest_ids_session_key(course)] = report_ids or [primary_report_id]
+            request.session[_course_report_reused_session_key(course)] = payload.get(
+                "reports_reused", 0
+            )
             _store_latest_course_report(
                 course,
                 primary_report_id,
@@ -1419,7 +1459,7 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
                         ("Course-wide report", None),
                     ),
                     "course": course,
-                    "exercises": sorted(course.exercises.all(), key=_natural_sort_key),
+                    "exercises": _dolos_hub_exercises(course),
                     "current_exercise": first_exercise,
                     "include_all": False,
                     "message": message,
@@ -1431,37 +1471,47 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
                     "course_report_completed_at": completed_at,
                     "course_report_task_status": _current_course_report_status(course, request),
                     "course_report_mode": True,
+                    "reports_reused": request.session.get(_course_report_reused_session_key(course)),
                 },
             )
 
         return redirect("dolos_hub_exercise", course_key=course.key, exercise_key=first_exercise.key)
 
-    include_all = request.GET.get("all") == "1"
-    selected_count, cache_key, counts_source, staff_excluded = _dolos_hub_scope(exercise, include_all)
+    newest = _newest_submission_count(request)
+    include_all = request.GET.get("all") == "1" and newest is None
+    selected_count, counts_source, staff_excluded = _dolos_hub_scope(
+        exercise, include_all, newest
+    )
+    stored_report = None
+    if newest is None:
+        stored_report = ExerciseDolosReport.objects.filter(
+            exercise=exercise, include_all=include_all
+        ).first()
 
     report_url = None
+    report_id = None
     message = None
     loading = False
 
-    if selected_count < 2:
+    if stored_report:
+        report_id = stored_report.report_id
+        report_url = "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, stored_report.report_id)
+    elif selected_count < 2:
         total = counts_source.count()
         students = counts_source.values("student").distinct().count()
-        message = _too_few_message(selected_count, include_all, total, students, staff_excluded)
+        message = _too_few_message(
+            selected_count, include_all, total, students, staff_excluded, newest
+        )
     else:
-        try:
-            cached_report_id = cache.get(cache_key)
-        except Exception:
-            cached_report_id = None
-        if cached_report_id:
-            report_url = "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, cached_report_id)
-        else:
-            loading = True
+        loading = True
 
     report_status_url = reverse(
         "dolos_hub_exercise_report", kwargs={"course_key": course.key, "exercise_key": exercise.key}
     )
     if include_all:
         report_status_url += "?all=1"
+    elif newest:
+        report_status_url += "?newest=%d" % newest
 
     return render(
         request,
@@ -1473,26 +1523,45 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
                 (exercise.name, None),
             ),
             "course": course,
-            "exercises": sorted(course.exercises.all(), key=_natural_sort_key),
+            "exercises": _dolos_hub_exercises(course),
             "current_exercise": exercise,
             "include_all": include_all,
+            "newest": newest,
             "message": message,
+            "report_id": report_id,
             "report_url": report_url,
             "loading": loading,
             "report_status_url": report_status_url,
             "course_report_completed_at": _read_latest_course_report(course, request)[1],
             "course_report_task_status": _current_course_report_status(course, request),
             "course_report_mode": False,
+            "report_reused": stored_report is not None,
+            "report_generated_at": stored_report.generated_at if stored_report else None,
+            "report_mode_label": (
+                "%d newest per student" % newest if newest else
+                "All submissions" if include_all else "Best per student"
+            ),
         },
     )
 
 
-def _dolos_hub_scope(exercise, include_all):
+def _dolos_hub_scope(exercise, include_all, newest=None):
     """Cheap (query-only) info about an exercise's hub scope."""
-    mode = "all" if include_all else "best"
-    selected_count = _exercise_submissions(exercise, include_all).count()
-    cache_key = "dolos_report:ex:%d:%s" % (exercise.id, mode)
-    return selected_count, cache_key, exercise.submissions, not exercise.use_staff_submissions
+    selected_count = _exercise_submissions(exercise, include_all, newest).count()
+    return selected_count, exercise.submissions, not exercise.use_staff_submissions
+
+
+def _dolos_hub_exercises(course):
+    exercises = sorted(course.exercises.all(), key=_natural_sort_key)
+    stored_modes = set(
+        ExerciseDolosReport.objects.filter(exercise__course=course).values_list(
+            "exercise_id", "include_all"
+        )
+    )
+    for exercise in exercises:
+        exercise.dolos_report_cached_best = (exercise.id, False) in stored_modes
+        exercise.dolos_report_cached_all = (exercise.id, True) in stored_modes
+    return exercises
 
 
 @access_resource
@@ -1502,10 +1571,23 @@ def dolos_hub_report(request, course_key=None, exercise_key=None, course=None, e
     (potentially slow) submission gathering + report generation/upload, and
     reports back whether a report is ready, empty, or failed.
     """
-    include_all = request.GET.get("all") == "1"
-    mode = "all" if include_all else "best"
+    newest = _newest_submission_count(request)
+    include_all = request.GET.get("all") == "1" and newest is None
+    stored_report = None
+    if newest is None:
+        stored_report = ExerciseDolosReport.objects.filter(
+            exercise=exercise, include_all=include_all
+        ).first()
+    if stored_report:
+        return JsonResponse({
+            "status": "ready",
+            "report_id": stored_report.report_id,
+            "report_url": "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, stored_report.report_id),
+            "reused": True,
+            "mode": "All submissions" if include_all else "Best per student",
+        })
 
-    selected = list(_exercise_submissions(exercise, include_all))
+    selected = list(_exercise_submissions(exercise, include_all, newest))
 
     def label_fn(sub):
         return sub.student.display_name
@@ -1514,7 +1596,6 @@ def dolos_hub_report(request, course_key=None, exercise_key=None, course=None, e
         _dolos_report_name(exercise.name),
         dolos_language(exercise.tokenizer),
     )
-    cache_key = "dolos_report:ex:%d:%s" % (exercise.id, mode)
     staff_excluded = not exercise.use_staff_submissions
 
     if len(selected) < 2:
@@ -1522,12 +1603,12 @@ def dolos_hub_report(request, course_key=None, exercise_key=None, course=None, e
         students = exercise.submissions.values("student").distinct().count()
         return JsonResponse({
             "status": "empty",
-            "message": _too_few_message(len(selected), include_all, total, students, staff_excluded),
+            "message": _too_few_message(
+                len(selected), include_all, total, students, staff_excluded, newest
+            ),
         })
 
-    report_id = _cached_report_id(
-        cache_key, lambda: _generate_dolos_report(selected, name, language, label_fn)
-    )
+    report_id = _generate_dolos_report(selected, name, language, label_fn)
     if not report_id:
         return JsonResponse({
             "status": "error",
@@ -1536,9 +1617,17 @@ def dolos_hub_report(request, course_key=None, exercise_key=None, course=None, e
                 "(%s) running?" % (len(selected), DOLOS_API_SERVER_URL)
             ),
         })
+    if newest is None:
+        ExerciseDolosReport.objects.update_or_create(
+            exercise=exercise,
+            include_all=include_all,
+            defaults={"report_id": report_id, "submissions_included": len(selected)},
+        )
     return JsonResponse({
         "status": "ready",
+        "report_id": report_id,
         "report_url": "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id),
+        "reused": False,
     })
 
 
@@ -1597,6 +1686,7 @@ def _dolos_pairs_for_student(report_id, student_key):
     return matches
 
 
+@functools.lru_cache(maxsize=128)
 def _fetch_dolos_pairs_rows(report_id):
     """Fetch Dolos pairs rows for a report, preferring the canonical endpoint.
 
@@ -1650,14 +1740,25 @@ def _collect_pair_exercise_scores(rows, exercises_by_key):
     return pair_exercise_scores
 
 
-def _build_pair_rows(pair_exercise_scores, exercises_by_key, students_by_key):
-    """Convert aggregated scores into the pair row payload."""
+def _build_pair_rows(
+    pair_exercise_scores,
+    exercises_by_key,
+    students_by_key,
+    min_similarity,
+    min_exercises,
+):
+    """Build pairs with enough exercises at or above the similarity threshold."""
     pair_rows = []
     for (a_key, b_key), ex_scores in pair_exercise_scores.items():
-        if not ex_scores:
+        qualifying_scores = {
+            key: similarity
+            for key, similarity in ex_scores.items()
+            if similarity >= min_similarity
+        }
+        if len(qualifying_scores) < min_exercises:
             continue
-        exercise_keys = sorted(ex_scores.keys())
-        sims = list(ex_scores.values())
+        exercise_keys = sorted(qualifying_scores.keys())
+        sims = list(qualifying_scores.values())
         pair_rows.append(
             {
                 "a_key": a_key,
@@ -1678,67 +1779,74 @@ def _build_pair_rows(pair_exercise_scores, exercises_by_key, students_by_key):
     return pair_rows
 
 
-def _build_group_rows(pair_rows, students_by_key):
-    """Build connected-group rows from strong pair relationships."""
-    edge_threshold = 2
+def _build_group_rows(pair_rows, students_by_key, limit=20):
+    """Build maximal groups where every member pair meets the thresholds."""
     adjacency = {}
-    strong_edges = []
     for pair in pair_rows:
-        if pair["exercise_count"] < edge_threshold:
-            continue
         a_key = pair["a_key"]
         b_key = pair["b_key"]
         adjacency.setdefault(a_key, set()).add(b_key)
         adjacency.setdefault(b_key, set()).add(a_key)
-        strong_edges.append((a_key, b_key, pair["exercise_count"]))
 
-    visited = set()
+    cliques = []
+
+    def find_cliques(current, candidates, excluded):
+        if len(cliques) >= limit:
+            return
+        if not candidates and not excluded:
+            if len(current) >= 3:
+                cliques.append(current)
+            return
+        pivot_candidates = candidates | excluded
+        pivot = max(
+            pivot_candidates,
+            key=lambda node: len(candidates & adjacency.get(node, set())),
+            default=None,
+        )
+        remaining = candidates - adjacency.get(pivot, set()) if pivot else set(candidates)
+        for node in list(remaining):
+            neighbours = adjacency.get(node, set())
+            find_cliques(
+                current | {node},
+                candidates & neighbours,
+                excluded & neighbours,
+            )
+            candidates.remove(node)
+            excluded.add(node)
+
+    find_cliques(set(), set(adjacency), set())
+    pair_counts = {
+        frozenset((pair["a_key"], pair["b_key"])): pair["exercise_count"]
+        for pair in pair_rows
+    }
     group_rows = []
-    for start in adjacency:
-        if start in visited:
-            continue
-        stack = [start]
-        component = set()
-        while stack:
-            node = stack.pop()
-            if node in visited:
-                continue
-            visited.add(node)
-            component.add(node)
-            for nxt in adjacency.get(node, ()):
-                if nxt not in visited:
-                    stack.append(nxt)
-
-        if len(component) < 3:
-            continue
-
-        component_edges = [
-            (a, b, count)
-            for a, b, count in strong_edges
-            if a in component and b in component
+    for clique in cliques:
+        member_keys = sorted(clique)
+        edge_counts = [
+            pair_counts[frozenset((left, right))]
+            for index, left in enumerate(member_keys)
+            for right in member_keys[index + 1:]
         ]
-        shared_exercises_score = sum(count for _a, _b, count in component_edges)
-        members = sorted(component, key=lambda key: students_by_key.get(key, key).lower())
-        member_keys = sorted(component)
+        members = sorted(clique, key=lambda key: students_by_key.get(key, key).lower())
         group_rows.append(
             {
-                "size": len(component),
+                "size": len(clique),
                 "member_keys": member_keys,
                 "member_slug": "-".join(member_keys),
                 "members": [
                     {"key": key, "name": students_by_key.get(key, key)}
                     for key in members
                 ],
-                "edge_count": len(component_edges),
-                "shared_exercises_score": shared_exercises_score,
+                "edge_count": len(edge_counts),
+                "minimum_shared_exercises": min(edge_counts),
             }
         )
 
     group_rows.sort(
-        key=lambda item: (item["size"], item["shared_exercises_score"], item["edge_count"]),
+        key=lambda item: (item["size"], item["minimum_shared_exercises"], item["edge_count"]),
         reverse=True,
     )
-    return group_rows, edge_threshold
+    return group_rows
 
 
 def _build_group_pair_rows(course, report_ids, member_keys):
@@ -1828,7 +1936,7 @@ def _build_group_pair_rows(course, report_ids, member_keys):
     return comparison_rows, load_errors
 
 
-def _build_course_similarity_summary(course, report_ids):
+def _build_course_similarity_summary(course, report_ids, min_similarity, min_exercises):
     """Build pair/group summaries from a course-wide Dolos report set.
 
     Returns dict with:
@@ -1840,24 +1948,40 @@ def _build_course_similarity_summary(course, report_ids):
     students_by_key = {s.key: s.display_name for s in course.students.all()}
 
     rows = []
-    for report_id in report_ids:
+
+    def fetch_report(report_id):
         try:
-            rows.extend(_fetch_dolos_pairs_rows(report_id))
+            return report_id, _fetch_dolos_pairs_rows(report_id), None
         except Exception:
-            logger.exception(
-                "Failed to load Dolos pair rows for course summary course=%s report=%s",
-                course.key,
-                report_id,
-            )
+            return report_id, (), True
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        fetched_reports = executor.map(fetch_report, report_ids)
+        for report_id, report_rows, failed in fetched_reports:
+            if failed:
+                logger.error(
+                    "Failed to load Dolos pair rows for course summary course=%s report=%s",
+                    course.key,
+                    report_id,
+                )
+            else:
+                rows.extend(report_rows)
 
     pair_exercise_scores = _collect_pair_exercise_scores(rows, exercises_by_key)
-    pair_rows = _build_pair_rows(pair_exercise_scores, exercises_by_key, students_by_key)
-    group_rows, edge_threshold = _build_group_rows(pair_rows, students_by_key)
+    pair_rows = _build_pair_rows(
+        pair_exercise_scores,
+        exercises_by_key,
+        students_by_key,
+        min_similarity,
+        min_exercises,
+    )
+    group_rows = _build_group_rows(pair_rows, students_by_key)
 
     stats = {
         "pairs_total": len(pair_rows),
         "groups_total": len(group_rows),
-        "edge_threshold": edge_threshold,
+        "min_similarity_percent": round(min_similarity * 100),
+        "min_exercises": min_exercises,
     }
     return {"pair_rows": pair_rows, "group_rows": group_rows, "stats": stats}
 
@@ -1872,7 +1996,7 @@ def _compress_matches_by_student(matches):
     return sorted(best_by_student.items(), key=lambda item: item[1], reverse=True)
 
 
-def _student_exercise_matches(course, student_key):
+def _student_exercise_matches(course, student_key, include_all=False):
     """Per exercise in course, this student's best Dolos match -- sourced
     straight from that exercise's own generated report so it always agrees
     with what the report itself shows, instead of a separately-computed
@@ -1880,20 +2004,16 @@ def _student_exercise_matches(course, student_key):
     yet (nothing to show); ``match`` is None if the report has no match for
     this student, otherwise (other_student_key, similarity).
 
-    Checks both "best" and "all" cache keys, preferring "all" if it exists
-    (since the user might have generated the report with ?all=1)."""
+    Uses only reports for the requested submission set."""
     exercises = sorted(course.exercises.all(), key=_natural_sort_key)
+    reports_by_exercise = dict(
+        ExerciseDolosReport.objects.filter(
+            exercise__course=course, include_all=include_all
+        ).values_list("exercise_id", "report_id")
+    )
 
     def fallback_lookup(exercise):
-        # Try "all" first (if user generated with ?all=1), then fall back to "best"
-        report_id = None
-        for mode in ("all", "best"):
-            try:
-                report_id = cache.get("dolos_report:ex:%d:%s" % (exercise.id, mode))
-                if report_id:
-                    break
-            except Exception:
-                continue
+        report_id = reports_by_exercise.get(exercise.id)
 
         match = None
         all_matches = []
@@ -1911,6 +2031,14 @@ def _student_exercise_matches(course, student_key):
         return list(executor.map(fallback_lookup, exercises))
 
 
+def _exercise_report_ids(course, include_all=False):
+    return list(
+        ExerciseDolosReport.objects.filter(
+            exercise__course=course, include_all=include_all
+        ).values_list("report_id", flat=True)
+    )
+
+
 @access_resource
 def students_hub(request, course_key=None, course=None) -> HttpResponse:
     """New Radar: list of students in the course, linking to their
@@ -1918,23 +2046,32 @@ def students_hub(request, course_key=None, course=None) -> HttpResponse:
     if request.session.get("legacy_radar", True):
         return redirect("students_view", course_key=course.key)
 
-    latest_course_report_id, latest_completed_at = _read_latest_course_report(course, request)
-    latest_course_report_ids = _read_latest_course_report_ids(course, request)
+    include_all = request.GET.get("all") == "1"
+    latest_course_report_ids = _exercise_report_ids(course, include_all=include_all)
+    latest_course_report_id = latest_course_report_ids[0] if latest_course_report_ids else None
+    _latest_report_id, latest_completed_at = _read_latest_course_report(course, request)
     course_report_task_status = _current_course_report_status(course, request)
-
-    if not latest_course_report_ids and isinstance(course_report_task_status, dict):
-        task_report_ids = course_report_task_status.get("report_ids") or []
-        task_report_id = course_report_task_status.get("report_id")
-        if task_report_ids or task_report_id:
-            latest_course_report_ids = [rid for rid in (task_report_ids or [task_report_id]) if rid]
-            latest_course_report_id = latest_course_report_id or latest_course_report_ids[0]
-            latest_completed_at = latest_completed_at or course_report_task_status.get("completed_at")
 
     summary = None
     summary_error = None
+    exercise_count = course.exercises.count()
+    max_exercises = max(1, exercise_count)
+    try:
+        min_similarity_percent = max(0, min(100, int(request.GET.get("similarity", 83))))
+    except (TypeError, ValueError):
+        min_similarity_percent = 83
+    try:
+        min_exercises = max(1, min(max_exercises, int(request.GET.get("exercises", 5))))
+    except (TypeError, ValueError):
+        min_exercises = min(5, max_exercises)
     if latest_course_report_ids:
         try:
-            summary = _build_course_similarity_summary(course, latest_course_report_ids)
+            summary = _build_course_similarity_summary(
+                course,
+                latest_course_report_ids,
+                min_similarity_percent / 100,
+                min_exercises,
+            )
         except Exception as exc:
             logger.exception(
                 "Failed to build course similarity summary for course=%s reports=%s",
@@ -1959,6 +2096,11 @@ def students_hub(request, course_key=None, course=None) -> HttpResponse:
             "course_report_summary": summary,
             "course_report_summary_error": summary_error,
             "course_report_task_status": course_report_task_status,
+            "min_similarity_percent": min_similarity_percent,
+            "min_exercises": min_exercises,
+            "exercise_count": exercise_count,
+            "include_all": include_all,
+            "show_submission_switch": True,
         },
     )
 
@@ -1969,7 +2111,8 @@ def student_pair_hub(request, course_key=None, a_key=None, b_key=None, course=No
     student_a = get_object_or_404(Student, course=course, key=a_key)
     student_b = get_object_or_404(Student, course=course, key=b_key)
 
-    latest_report_ids = _read_latest_course_report_ids(course, request)
+    include_all = request.GET.get("all") == "1"
+    latest_report_ids = _exercise_report_ids(course, include_all=include_all)
     exercises_by_key = {ex.key: ex for ex in sorted(course.exercises.all(), key=_natural_sort_key)}
     pair_exercise_scores = {}
     pair_exercise_rows = {}
@@ -2067,7 +2210,134 @@ def student_pair_hub(request, course_key=None, a_key=None, b_key=None, course=No
             "pair_rows": pair_rows,
             "load_errors": load_errors,
             "course_report_task_status": _current_course_report_status(course, request),
+            "include_all": include_all,
         },
+    )
+
+
+@require_POST
+@access_resource
+def create_cheatersheet_comparison(
+    request,
+    course_key=None,
+    left_submission_id=None,
+    right_submission_id=None,
+    course=None,
+) -> JsonResponse:
+    """Send an exact New Radar submission pair to CheaterSheet."""
+    left_submission = get_object_or_404(
+        Submission.objects.select_related("exercise", "student"),
+        pk=left_submission_id,
+        exercise__course=course,
+    )
+    right_submission = get_object_or_404(
+        Submission.objects.select_related("exercise", "student"),
+        pk=right_submission_id,
+        exercise=left_submission.exercise,
+    )
+    if left_submission.student_id == right_submission.student_id:
+        return JsonResponse({"error": "A comparison requires two different students"}, status=400)
+
+    return _send_cheatersheet_comparison(
+        request,
+        course,
+        left_submission,
+        right_submission,
+    )
+
+
+def _send_cheatersheet_comparison(request, course, left_submission, right_submission):
+    payload = {
+        "comparison": True,
+        "submission_id": left_submission.external_key,
+        "student_key": left_submission.student.key,
+        "other_submission_id": right_submission.external_key,
+        "other_student_key": right_submission.student.key,
+        "course_key": course.api_id,
+        "similarity": request.POST.get("similarity", ""),
+        "comment": request.POST.get("comment", "Radar Dolos comparison"),
+    }
+    try:
+        response = requests.post(
+            "%s/api/submissions/%s/"
+            % (
+                getattr(
+                    settings,
+                    "CHEATERSHEET_WEB_SERVER_URL",
+                    "http://localhost:8072",
+                ).rstrip("/"),
+                left_submission.external_key,
+            ),
+            json=payload,
+            headers={
+                "Authorization": "Token %s" % settings.CHEATERSHEET_API_TOKEN,
+                "Content-Type": "application/json",
+            },
+            timeout=15,
+        )
+        response_data = response.json()
+    except requests.RequestException as exc:
+        logger.exception("Failed to create CheaterSheet comparison")
+        return JsonResponse({"error": str(exc)}, status=502)
+    except ValueError:
+        return JsonResponse({"error": "CheaterSheet returned an invalid response"}, status=502)
+
+    return JsonResponse(
+        response_data,
+        safe=isinstance(response_data, dict),
+        status=response.status_code,
+    )
+
+
+@require_POST
+@access_resource
+def create_cheatersheet_comparison_from_dolos(
+    request,
+    course_key=None,
+    report_id=None,
+    pair_id=None,
+    course=None,
+) -> JsonResponse:
+    """Resolve the current Dolos pair and send it to CheaterSheet."""
+    try:
+        pair = next(
+            row for row in _fetch_dolos_pairs_rows(report_id)
+            if str(row.get("id")) == str(pair_id)
+        )
+    except StopIteration:
+        return JsonResponse({"error": "The selected Dolos pair was not found"}, status=404)
+    except requests.RequestException as exc:
+        logger.exception("Failed to load selected Dolos pair")
+        return JsonResponse({"error": str(exc)}, status=502)
+
+    left_submission_id = _submission_id_from_path(pair.get("leftFilePath", ""))
+    right_submission_id = _submission_id_from_path(pair.get("rightFilePath", ""))
+    submissions = {
+        submission.pk: submission
+        for submission in Submission.objects.select_related("exercise", "student").filter(
+            pk__in=[left_submission_id, right_submission_id],
+            exercise__course=course,
+        )
+    }
+    try:
+        left_submission = submissions[int(left_submission_id)]
+        right_submission = submissions[int(right_submission_id)]
+    except (KeyError, TypeError, ValueError):
+        return JsonResponse({"error": "Dolos pair submissions were not found in this course"}, status=404)
+    if left_submission.exercise_id != right_submission.exercise_id:
+        return JsonResponse({"error": "Dolos pair submissions belong to different exercises"}, status=400)
+
+    request.POST = request.POST.copy()
+    request.POST.setdefault("similarity", pair.get("similarity", ""))
+    request.POST.setdefault(
+        "comment",
+        "Radar Dolos comparison: %s similarity" % pair.get("similarity", ""),
+    )
+    return _send_cheatersheet_comparison(
+        request,
+        course,
+        left_submission,
+        right_submission,
     )
 
 
@@ -2217,7 +2487,8 @@ def student_group_hub(request, course_key=None, member_keys=None, course=None) -
         group_students.append(get_object_or_404(Student, course=course, key=key))
 
     resolved_member_keys = [student.key for student in group_students]
-    latest_report_ids = _read_latest_course_report_ids(course, request)
+    include_all = request.GET.get("all") == "1"
+    latest_report_ids = _exercise_report_ids(course, include_all=include_all)
     comparison_rows = []
     load_errors = []
 
@@ -2240,6 +2511,7 @@ def student_group_hub(request, course_key=None, member_keys=None, course=None) -
             "comparison_rows": comparison_rows,
             "load_errors": load_errors,
             "course_report_task_status": _current_course_report_status(course, request),
+            "include_all": include_all,
         },
     )
 
@@ -2258,110 +2530,30 @@ def student_hub(request, course_key=None, student_key=None, course=None, student
     if request.session.get("legacy_radar", True):
         return redirect("student_view", course_key=course.key, student_key=student_key)
 
-    rows = []
-    latest_course_report_id, _latest_course_report_completed_at = _read_latest_course_report(course, request)
-    latest_course_report_url = None
-    latest_course_report_iframe_url = None
-    course_wide_fetch_error = None
-    debug_info = {
-        "using_course_wide_report": bool(latest_course_report_id),
-        "report_id": latest_course_report_id,
-        "pairs_total": 0,
-        "pairs_for_student": 0,
-        "matched_exercises": 0,
-        "exercise_count": course.exercises.count(),
-    }
-    if latest_course_report_id:
-        latest_course_report_iframe_url = "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, latest_course_report_id)
-        latest_course_report_url = reverse("dolos_hub", kwargs={"course_key": course.key}) + "?course_report=1"
-
-    if latest_course_report_id:
-        exercises = {ex.key: ex for ex in sorted(course.exercises.all(), key=_natural_sort_key)}
-        all_by_exercise = {}
-        try:
-            for row in _fetch_dolos_pairs_rows(latest_course_report_id):
-                debug_info["pairs_total"] += 1
-                left_path = row["leftFilePath"]
-                right_path = row["rightFilePath"]
-                left_student = _student_key_from_path(left_path)
-                right_student = _student_key_from_path(right_path)
-                similarity = float(row["similarity"])
-
-                if left_student == student_key and right_student != student_key:
-                    exercise_key = _exercise_key_from_path(left_path)
-                    candidate = (right_student, similarity)
-                elif right_student == student_key and left_student != student_key:
-                    exercise_key = _exercise_key_from_path(right_path)
-                    candidate = (left_student, similarity)
-                else:
-                    continue
-
-                debug_info["pairs_for_student"] += 1
-
-                if exercise_key not in exercises:
-                    continue
-                per_exercise = all_by_exercise.setdefault(exercise_key, {})
-                current = per_exercise.get(candidate[0])
-                if current is None or candidate[1] > current:
-                    per_exercise[candidate[0]] = candidate[1]
-            debug_info["matched_exercises"] = len(all_by_exercise)
-        except Exception as exc:
-            logger.exception(
-                "Failed to load course-wide pairs for course=%s student=%s report=%s",
-                course.key,
-                student_key,
-                latest_course_report_id,
-            )
-            course_wide_fetch_error = str(exc)
-            debug_info["error"] = course_wide_fetch_error
-            all_by_exercise = {}
-
-        students_by_key = {s.key: s.display_name for s in course.students.all()}
-
-        for exercise in sorted(course.exercises.all(), key=_natural_sort_key):
-            compressed_matches = sorted(
-                all_by_exercise.get(exercise.key, {}).items(),
-                key=lambda item: item[1],
-                reverse=True,
-            )
-            best_match = compressed_matches[0] if compressed_matches else None
-            rows.append(
+    include_all = request.GET.get("all") == "1"
+    students_by_key = {s.key: s.display_name for s in course.students.all()}
+    rows = [
+        {
+            "exercise": exercise,
+            "generated": report_id is not None,
+            "match": match,
+            "all_matches": [
                 {
-                    "exercise": exercise,
-                    "generated": True,
-                    "match": best_match,
-                    "all_matches": [
-                        {
-                            "student_key": other_key,
-                            "student_name": students_by_key.get(other_key, other_key),
-                            "similarity": similarity,
-                        }
-                        for other_key, similarity in compressed_matches
-                    ],
-                    "report_url": latest_course_report_url,
+                    "student_key": other_key,
+                    "student_name": students_by_key.get(other_key, other_key),
+                    "similarity": similarity,
                 }
-            )
-    else:
-        students_by_key = {s.key: s.display_name for s in course.students.all()}
-        rows = [
-            {
-                "exercise": exercise,
-                "generated": report_id is not None,
-                "match": match,
-                "all_matches": [
-                    {
-                        "student_key": other_key,
-                        "student_name": students_by_key.get(other_key, other_key),
-                        "similarity": similarity,
-                    }
-                    for other_key, similarity in all_matches
-                ],
-                "report_url": reverse(
-                    "dolos_hub_exercise", kwargs={"course_key": course.key, "exercise_key": exercise.key}
-                ),
-            }
-            for exercise, report_id, match, all_matches in _student_exercise_matches(course, student_key)
-        ]
+                for other_key, similarity in all_matches
+            ],
+            "report_url": reverse(
+                "dolos_hub_exercise",
+                kwargs={"course_key": course.key, "exercise_key": exercise.key},
+            ) + ("?all=1" if include_all else ""),
+        }
+        for exercise, report_id, match, all_matches in _student_exercise_matches(
+            course, student_key, include_all=include_all
+        )
+    ]
 
     return render(
         request,
@@ -2376,11 +2568,7 @@ def student_hub(request, course_key=None, student_key=None, course=None, student
             "course": course,
             "student": student,
             "rows": rows,
-            "using_course_wide_report": bool(latest_course_report_id),
-            "course_wide_report_url": latest_course_report_iframe_url,
-            "course_wide_report_id": latest_course_report_id,
-            "course_wide_fetch_error": course_wide_fetch_error,
-            "debug_info": debug_info,
+            "include_all": include_all,
         },
     )
 

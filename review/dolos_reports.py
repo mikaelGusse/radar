@@ -109,10 +109,14 @@ def write_submission_files(work_dir, submissions, label_fn, get_text):
         if isinstance(created_at, datetime.datetime):
             created_at = created_at.strftime("%Y-%m-%d %H:%M:%S %z")
         exercise = submission.exercise
+        student = submission.student
+        student_label = student.display_name
+        if student_label != student.key:
+            student_label = "%s (%s)" % (student_label, student.key)
         rows.append(
             {
                 "filename": rel_path,
-                "full_name": "%s #%s" % (submission.student.display_name, submission.key),
+                "full_name": student_label,
                 "label": label_fn(submission),
                 "created_at": created_at or "",
                 "exercise": exercise.name,
@@ -163,12 +167,12 @@ def zip_dataset(src_dir, zip_path):
 
 def _demo():
     """Self-check with fake submissions; run: ``python -m review.dolos_reports``."""
-    def fake(course_key, ex_key, ex_name, course_name, student_key, sub_id):
+    def fake(course_key, ex_key, ex_name, course_name, student_key, sub_id, student_name=None):
         course = types.SimpleNamespace(key=course_key, name=course_name)
         return types.SimpleNamespace(
             id=sub_id,
             key=str(sub_id),
-            student=types.SimpleNamespace(key=student_key, display_name=student_key),
+            student=types.SimpleNamespace(key=student_key, display_name=student_name or student_key),
             exercise=types.SimpleNamespace(key=ex_key, name=ex_name, course=course),
             provider_submission_time=None,
         )
@@ -176,7 +180,7 @@ def _demo():
     submissions = [
         fake("c1", "e1", "Ex 1", "Course 1", "alice", 1),
         fake("c1", "e2", "Ex 2", "Course 1", "alice", 2),
-        fake("c1", "e1", "Ex 1", "Course 1", "bob", 3),
+        fake("c1", "e1", "Ex 1", "Course 1", "bob", 3, "Bob Example"),
     ]
     with tempfile.TemporaryDirectory() as work_dir:
         write_dataset(
@@ -202,6 +206,7 @@ def _demo():
     # Alice submitted to two different exercises -> Dolos sees her across exercises.
     alice_labels = {r["label"] for r in read_rows if r["full_name"].startswith("alice")}
     assert alice_labels == {"Ex 1", "Ex 2"}, alice_labels
+    assert {r["full_name"] for r in read_rows} == {"alice", "Bob Example (bob)"}
     assert "info.csv" in names
     assert "c1/e1/alice_1.txt" in names
     # Radar tokenizers must map to names Dolos actually accepts, else the CLI

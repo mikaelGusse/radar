@@ -509,6 +509,19 @@ class Exercise(models.Model):
         return "%s/%s (%s)" % (self.course.name, self.name, self.created)
 
 
+class ExerciseDolosReport(models.Model):
+    exercise = models.ForeignKey(
+        Exercise, on_delete=models.CASCADE, related_name="dolos_reports"
+    )
+    include_all = models.BooleanField(default=False)
+    report_id = models.TextField()
+    submissions_included = models.PositiveIntegerField(default=0)
+    generated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("exercise", "include_all")
+
+
 # What's with the ForeignKey and unique_together with Course?
 # Why not ManyToMany to Course?
 class Student(models.Model):

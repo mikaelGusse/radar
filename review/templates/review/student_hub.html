@@ -12,6 +12,12 @@
 	.hub-sidebar a.active { background: var(--pico-primary-background); color: var(--pico-primary-inverse); border-color: var(--pico-primary); }
 	.hub-main { flex: 1; min-width: 0; }
 	.hub-main h3 { margin: 0 0 .5rem 0; }
+	.hub-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .5rem; }
+	.hub-heading h3 { margin: 0; }
+	.hub-mode-options { display: inline-flex; border: 1px solid var(--pico-primary); border-radius: 6px; overflow: hidden; }
+	.hub-mode-options a { padding: .25rem .55rem; font-size: .8rem; white-space: nowrap; }
+	.hub-mode-options a + a { border-left: 1px solid var(--pico-primary); }
+	.hub-mode-options a[aria-current="true"] { background: var(--pico-primary); color: var(--pico-primary-inverse); font-weight: 700; }
 	.hub-main table { width: 100%; border-collapse: collapse; }
 	.hub-main th, .hub-main td { padding: .5rem; text-align: left; border-bottom: 1px solid var(--pico-muted-border-color); }
 	.hub-main th { font-size: .8rem; color: var(--pico-muted-color); font-weight: 600; }
@@ -33,35 +39,21 @@
 	<aside class="hub-sidebar">
 		<h3>Students</h3>
 		{% for listed_student in course.students.all %}
-		<a href="{% url 'student_hub' course_key=course.key student_key=listed_student.key %}"
+		<a href="{% url 'student_hub' course_key=course.key student_key=listed_student.key %}{% if include_all %}?all=1{% endif %}"
 		   {% if listed_student.key == student.key %}class="active"{% endif %}>
 			{{ listed_student.display_name }}
 		</a>
 		{% endfor %}
 	</aside>
 	<main class="hub-main">
-		<h3>{{ student.display_name }}</h3>
-		{% if course_wide_fetch_error %}
-		<div class="hub-warn">
-			Could not load pair data from the latest course-wide report ({{ course_wide_report_id }}). The table may show "No similar submissions found" even when matches exist.
-		</div>
-		{% endif %}
-		<details class="debug-panel">
-			<summary>Debug Panel</summary>
-			<div class="debug-grid">
-				<div class="k">Course-wide mode</div><div>{{ debug_info.using_course_wide_report }}</div>
-				<div class="k">Report ID</div><div>{{ debug_info.report_id|default:"(none)" }}</div>
-				<div class="k">Total pair rows read</div><div>{{ debug_info.pairs_total }}</div>
-				<div class="k">Pairs involving student</div><div>{{ debug_info.pairs_for_student }}</div>
-				<div class="k">Exercises with matches</div><div>{{ debug_info.matched_exercises }} / {{ debug_info.exercise_count }}</div>
-				<div class="k">Fetch error</div><div>{{ debug_info.error|default:"(none)" }}</div>
+		<div class="hub-heading">
+			<h3>{{ student.display_name }}</h3>
+			<div class="hub-mode-options" role="group" aria-label="Submission set">
+				<a href="{{ request.path }}"{% if not include_all %} aria-current="true"{% endif %}>Best per student</a>
+				<a href="{{ request.path }}?all=1"{% if include_all %} aria-current="true"{% endif %}>All submissions</a>
 			</div>
-		</details>
-		{% if using_course_wide_report %}
-		<p class="muted">Best match per exercise, sourced from the latest course-wide Dolos report.</p>
-		{% else %}
-		<p class="muted">Best match per exercise, read straight from each exercise's own Dolos report.</p>
-		{% endif %}
+		</div>
+		<p class="muted">Best match per exercise from the cached {% if include_all %}all submissions{% else %}best per student{% endif %} report.</p>
 		<table>
 			<thead>
 				<tr>
@@ -73,11 +65,7 @@
 				{% for row in rows %}
 				<tr>
 					<td>
-						{% if using_course_wide_report %}
-						{{ row.exercise.name }}
-						{% else %}
 						<a href="{{ row.report_url }}">{{ row.exercise.name }}</a>
-						{% endif %}
 					</td>
 					{% if not row.generated %}
 					<td class="muted">Not analysed yet</td>
@@ -86,7 +74,7 @@
 					{% else %}
 					<td>
 						{{ row.match.1|percent }} similar to
-						<a href="{% url 'student_hub' course_key=course.key student_key=row.match.0 %}">
+						<a href="{% url 'student_hub' course_key=course.key student_key=row.match.0 %}{% if include_all %}?all=1{% endif %}">
 							{{ row.all_matches.0.student_name }}
 						</a>
 						{% if row.all_matches|length > 1 %}
@@ -96,7 +84,7 @@
 								{% for m in row.all_matches %}
 								<li>
 									{{ m.similarity|percent }} similar to
-									<a href="{% url 'student_hub' course_key=course.key student_key=m.student_key %}">{{ m.student_name }}</a>
+									<a href="{% url 'student_hub' course_key=course.key student_key=m.student_key %}{% if include_all %}?all=1{% endif %}">{{ m.student_name }}</a>
 								</li>
 								{% endfor %}
 							</ul>

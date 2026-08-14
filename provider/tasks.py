@@ -18,7 +18,7 @@ from celery.utils.log import get_task_logger
 from django.conf import settings
 from django.core.cache import caches
 
-from data.models import Course, Exercise, TaskError
+from data.models import Course, Exercise, ExerciseDolosReport, TaskError
 from matcher import tasks as matcher_tasks
 from provider import aplus
 from provider.insert import (
@@ -607,7 +607,7 @@ def _report_course_progress(task, progress_cache_key, **payload):
     soft_time_limit=25 * 60,
     time_limit=30 * 60,
 )
-def generate_course_dolos_task(self, course_key):
+def generate_course_dolos_task(self, course_key, force=False):
     """
     Generate course-wide Dolos report by analyzing each exercise separately
     and combining the results.
@@ -652,20 +652,44 @@ def generate_course_dolos_task(self, course_key):
 
             try:
                 include_all = _should_include_all_submissions(exercise)
-                progress_callback = _make_course_report_progress_callback(
-                    report_progress,
-                    exercise.name,
-                    exercise.key,
-                    index - 1,
-                    total_exercises,
-                    remaining,
-                )
-                exercise_result = _build_exercise_dolos_report(
-                    exercise,
-                    include_all=include_all,
-                    report_progress=progress_callback,
-                )
-
+                stored_report = None
+                if not force:
+                    stored_report = ExerciseDolosReport.objects.filter(
+                        exercise=exercise, include_all=include_all
+                    ).first()
+                if stored_report:
+                    exercise_result = {
+                        "exercise_key": exercise.key,
+                        "exercise_name": exercise.name,
+                        "report_id": stored_report.report_id,
+                        "submissions_included": stored_report.submissions_included,
+                        "submissions_skipped": 0,
+                        "include_all_used": include_all,
+                        "reused": True,
+                    }
+                else:
+                    progress_callback = _make_course_report_progress_callback(
+                        report_progress,
+                        exercise.name,
+                        exercise.key,
+                        index - 1,
+                        total_exercises,
+                        remaining,
+                    )
+                    exercise_result = _build_exercise_dolos_report(
+                        exercise,
+                        include_all=include_all,
+                        report_progress=progress_callback,
+                    )
+                    ExerciseDolosReport.objects.update_or_create(
+                        exercise=exercise,
+                        include_all=include_all,
+                        defaults={
+                            "report_id": exercise_result["report_id"],
+                            "submissions_included": exercise_result["submissions_included"],
+                        },
+                    )
+                    exercise_result["reused"] = False
                 report_results.append(exercise_result)
                 logger.info("Completed exercise %s/%s: %s", index, total_exercises, exercise.key)
             except Exception as exc:
@@ -689,6 +713,8 @@ def generate_course_dolos_task(self, course_key):
             "exercises_total": total_exercises,
             "exercises_failed": failed_exercises,
             "submissions_total": sum(r["submissions_included"] for r in report_results),
+            "reports_reused": sum(1 for r in report_results if r["reused"]),
+            "reports_generated": sum(1 for r in report_results if not r["reused"]),
         }
         try:
             caches["course_report_progress"].set(

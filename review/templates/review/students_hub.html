@@ -12,13 +12,17 @@
 	.hub-main .placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--pico-muted-color); text-align: center; }
 	.hub-main .placeholder h4 { margin: 0 0 .5rem 0; font-size: 1rem; }
 	.hub-main .placeholder p { margin: 0; }
-	.summary-head { display: flex; align-items: baseline; gap: .8rem; margin-bottom: .55rem; }
+	.summary-head { display: flex; align-items: center; gap: .8rem; margin-bottom: .55rem; }
 	.summary-head h4 { margin: 0; }
 	.summary-head .muted { color: var(--pico-muted-color); font-size: .88rem; }
 	.summary-card { border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); padding: .7rem .85rem; margin-bottom: .8rem; }
 	.summary-card h5 { margin: 0 0 .55rem 0; font-size: .95rem; }
 	.summary-grid { display: grid; grid-template-columns: 220px 1fr; gap: .2rem .6rem; font-size: .88rem; }
 	.summary-grid .k { color: var(--pico-muted-color); }
+	.summary-filters { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; margin: 0 0 .8rem; }
+	.summary-filters label { margin: 0; font-size: .8rem; font-weight: 600; }
+	.summary-filters input { width: 8rem; margin: .2rem 0 0; padding: .35rem .5rem; }
+	.summary-filters button { width: auto; margin: 0; padding: .4rem .75rem; }
 	.summary-table { width: 100%; border-collapse: collapse; }
 	.summary-table th, .summary-table td { padding: .45rem .5rem; text-align: left; border-bottom: 1px solid var(--pico-muted-border-color); vertical-align: top; }
 	.summary-table th { font-size: .8rem; color: var(--pico-muted-color); font-weight: 600; }
@@ -33,7 +37,7 @@
 	<aside class="hub-sidebar">
 		<h3>Students</h3>
 		{% for student in students %}
-		<a href="{% url 'student_hub' course_key=course.key student_key=student.key %}">
+		<a href="{% url 'student_hub' course_key=course.key student_key=student.key %}{% if include_all %}?all=1{% endif %}">
 			{{ student.display_name }}
 		</a>
 		{% empty %}
@@ -46,21 +50,32 @@
 		<div class="summary-head">
 			<h4>Similarity Summary</h4>
 			{% if course_report_id %}
-			<span class="muted">Using course-wide report {{ course_report_id }}</span>
+			<span class="muted">Using cached {% if include_all %}all submissions{% else %}best per student{% endif %} reports</span>
 			{% else %}
-			<span class="muted">No course-wide report found yet</span>
+			<span class="muted">No cached {% if include_all %}all submissions{% else %}best per student{% endif %} reports yet</span>
 			{% endif %}
 		</div>
 
 		{% if course_report_summary_error %}
 		<article class="error">Failed to load summary data: {{ course_report_summary_error }}</article>
 		{% elif course_report_summary %}
+		<form class="summary-filters" method="get">
+			{% if include_all %}<input type="hidden" name="all" value="1">{% endif %}
+			<label>Minimum similarity (%)
+				<input type="number" name="similarity" min="0" max="100" step="1" value="{{ min_similarity_percent }}">
+			</label>
+			<label>Minimum shared exercises
+				<input type="number" name="exercises" min="1" max="{{ exercise_count|default:1 }}" step="1" value="{{ min_exercises }}">
+			</label>
+			<button type="submit">Apply thresholds</button>
+		</form>
+
 		<div class="summary-card">
 			<h5>Overview</h5>
 			<div class="summary-grid">
-				<div class="k">Student pairs</div><div>{{ course_report_summary.stats.pairs_total }}</div>
-				<div class="k">Groups (3+ students)</div><div>{{ course_report_summary.stats.groups_total }}</div>
-				<div class="k">Group edge threshold</div><div>{{ course_report_summary.stats.edge_threshold }} shared exercises</div>
+				<div class="k">Qualifying student pairs</div><div>{{ course_report_summary.stats.pairs_total }}</div>
+				<div class="k">Qualifying groups (3+ students)</div><div>{{ course_report_summary.stats.groups_total }}</div>
+				<div class="k">Rule</div><div>At least {{ course_report_summary.stats.min_exercises }} exercises at {{ course_report_summary.stats.min_similarity_percent }}% similarity or higher</div>
 			</div>
 		</div>
 
@@ -70,8 +85,8 @@
 				<thead>
 					<tr>
 						<th>Students</th>
-						<th>Shared Exercises</th>
-						<th>Average Similarity</th>
+						<th>Qualifying Exercises</th>
+						<th>Average Qualifying Similarity</th>
 						<th>Max Similarity</th>
 						<th>Details</th>
 					</tr>
@@ -80,13 +95,13 @@
 					{% for pair in course_report_summary.pair_rows|slice:":40" %}
 					<tr>
 						<td>
-							<a href="{% url 'student_pair_hub' course_key=course.key a_key=pair.a_key b_key=pair.b_key %}">{{ pair.a_name }} and {{ pair.b_name }}</a>
+							<a href="{% url 'student_pair_hub' course_key=course.key a_key=pair.a_key b_key=pair.b_key %}{% if include_all %}?all=1{% endif %}">{{ pair.a_name }} and {{ pair.b_name }}</a>
 						</td>
 						<td>{{ pair.exercise_count }}</td>
 						<td>{{ pair.avg_similarity|percent }}</td>
 						<td>{{ pair.max_similarity|percent }}</td>
 						<td>
-							<a href="{% url 'student_pair_hub' course_key=course.key a_key=pair.a_key b_key=pair.b_key %}">View comparisons</a>
+							<a href="{% url 'student_pair_hub' course_key=course.key a_key=pair.a_key b_key=pair.b_key %}{% if include_all %}?all=1{% endif %}">View comparisons</a>
 						</td>
 					</tr>
 					{% empty %}
@@ -97,14 +112,14 @@
 		</div>
 
 		<div class="summary-card">
-			<h5>Potential Groups (3+ Students)</h5>
+			<h5>Groups Meeting Thresholds (3+ Students)</h5>
 			<table class="summary-table">
 				<thead>
 					<tr>
 						<th>Members</th>
 						<th>Size</th>
-						<th>Strong Pair Edges</th>
-						<th>Shared-Exercise Score</th>
+						<th>Qualifying Pair Edges</th>
+						<th>Fewest Qualifying Exercises per Pair</th>
 						<th>Mini report</th>
 					</tr>
 				</thead>
@@ -114,19 +129,19 @@
 						<td>
 							<div class="group-members">
 								{% for member in group.members %}
-								<a href="{% url 'student_hub' course_key=course.key student_key=member.key %}">{{ member.name }}</a>
+								<a href="{% url 'student_hub' course_key=course.key student_key=member.key %}{% if include_all %}?all=1{% endif %}">{{ member.name }}</a>
 								{% endfor %}
 							</div>
 						</td>
 						<td>{{ group.size }}</td>
 						<td>{{ group.edge_count }}</td>
-						<td>{{ group.shared_exercises_score }}</td>
+						<td>{{ group.minimum_shared_exercises }}</td>
 						<td>
-							<a href="{% url 'student_group_hub' course_key=course.key member_keys=group.member_slug %}">Open mini report</a>
+							<a href="{% url 'student_group_hub' course_key=course.key member_keys=group.member_slug %}{% if include_all %}?all=1{% endif %}">Open mini report</a>
 						</td>
 					</tr>
 					{% empty %}
-					<tr><td colspan="5" class="muted">No 3+ student groups at the current threshold.</td></tr>
+					<tr><td colspan="5" class="muted">No fully connected 3+ student groups meet both thresholds.</td></tr>
 					{% endfor %}
 				</tbody>
 			</table>
@@ -134,7 +149,7 @@
 		{% else %}
 		<div class="placeholder">
 			<h4>No summary yet</h4>
-			<p>Generate a course-wide Dolos report from the Whole Course tab first.</p>
+			<p>Generate {% if include_all %}all-submissions{% else %}best-per-student{% endif %} exercise reports first.</p>
 		</div>
 		{% endif %}
 	</main>
