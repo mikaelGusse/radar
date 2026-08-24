@@ -4,7 +4,7 @@ from playwright.sync_api import Page, expect
 
 # Function to login
 def login(page: Page) -> None:
-    page.goto('http://localhost:8000/')
+    page.goto('http://localhost:8009/')
     page.get_by_label('Username').click()
     page.get_by_label('Username').fill('Username')
     page.get_by_label('Password').click()

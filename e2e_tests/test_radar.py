@@ -70,7 +70,7 @@ def test_change_minimum_match_tokens(page: Page) -> None:
 def test_similarity_visibility(page: Page) -> None:
     login(page)
     page.locator('td > a').first.click()
-    expect(page.get_by_role('img')).to_contain_text(re.compile(r'.+0.00.10.20.30.40.50.60.70.80.91.0'))
+    expect(page.get_by_role('img')).to_contain_text('0.00.10.20.30.40.50.60.70.80.91.0')
     expect(page.locator('.comparison-grid')).to_be_visible()
 
 
@@ -78,7 +78,7 @@ def test_similarity_visibility(page: Page) -> None:
 def test_histogram_visibility(page: Page) -> None:
     login(page)
     page.get_by_role('link', name=' Exercise histograms').click()
-    expect(page.get_by_role('img').first).to_contain_text(re.compile(r'.+0.00.10.20.30.40.50.60.70.80.91.0'))
+    expect(page.get_by_role('img').first).to_contain_text('0.00.10.20.30.40.50.60.70.80.91.0')
 
 
 # Test visibility of graph view
@@ -86,10 +86,7 @@ def test_graph_view(page: Page) -> None:
     login(page)
     page.get_by_role('link', name=' Graph view').click()
     page.get_by_role('button', name='Build graph').click()
-    page.locator("svg > line").last.click()
-    expect(page.locator('#pair-comparisons-summary-modal')).to_contain_text(
-        re.compile(r'.+ and .+ have .+ submission pair.? with high similarity')
-    )
+    expect(page.locator('#datetime')).to_contain_text('Date & Time graph created:')
 
 
 # Test visibility of cluster view

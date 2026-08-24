@@ -29,7 +29,9 @@
 	.hub-frame { flex: 1; width: 100%; height: calc(100vh - 6.5rem); min-height: calc(100vh - 6.5rem); border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); background: #fff; }
 	.hub-multi-report { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-top: .75rem; }
 	.hub-multi-report p { margin: 0; }
-	.hub-cache-notice { margin: .15rem 0 .35rem; color: var(--pico-muted-color); font-size: .8rem; }
+	.hub-cache-notice { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin: .15rem 0 .35rem; color: var(--pico-muted-color); font-size: .8rem; }
+	.hub-cache-notice form { margin: 0; }
+	.hub-cache-notice button { width: auto; margin: 0; padding: .25rem .55rem; font-size: .78rem; }
 	.hub-multi-report a[role="button"] { margin: 0; padding: .4rem .7rem; font-size: .85rem; }
 	.hub-exercise-reports { display: flex; flex-direction: column; gap: 1.5rem; }
 	.hub-exercise-reports .hub-frame { min-height: 60vh; }
@@ -87,7 +89,15 @@
 {% endif %}
 
 {% if report_reused %}
-<p class="hub-cache-notice"><strong>Using cached report.</strong> {{ report_mode_label }} report generated {{ report_generated_at|date:"Y-m-d H:i" }}.</p>
+<div class="hub-cache-notice">
+	<span><strong>Using cached report.</strong> {{ report_mode_label }} report generated {{ report_generated_at|date:"Y-m-d H:i" }}.</span>
+	{% if new_submissions_count %}<strong>{{ new_submissions_count }} new submission{{ new_submissions_count|pluralize }} since last analysis.</strong>{% endif %}
+	<form method="get" action="{{ request.path }}">
+		{% if include_all %}<input type="hidden" name="all" value="1">{% endif %}
+		<input type="hidden" name="force" value="1">
+		<button type="submit" class="secondary outline">Redo analysis</button>
+	</form>
+</div>
 {% endif %}
 
 {% if report_url or report_urls %}

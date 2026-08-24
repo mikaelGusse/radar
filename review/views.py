@@ -1479,6 +1479,7 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
 
     newest = _newest_submission_count(request)
     include_all = request.GET.get("all") == "1" and newest is None
+    force = request.GET.get("force") == "1"
     selected_count, counts_source, staff_excluded = _dolos_hub_scope(
         exercise, include_all, newest
     )
@@ -1493,7 +1494,7 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
     message = None
     loading = False
 
-    if stored_report:
+    if stored_report and not force:
         report_id = stored_report.report_id
         report_url = "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, stored_report.report_id)
     elif selected_count < 2:
@@ -1512,6 +1513,8 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
         report_status_url += "?all=1"
     elif newest:
         report_status_url += "?newest=%d" % newest
+    if force:
+        report_status_url += "%sforce=1" % ("&" if "?" in report_status_url else "?")
 
     return render(
         request,
@@ -1535,8 +1538,12 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
             "course_report_completed_at": _read_latest_course_report(course, request)[1],
             "course_report_task_status": _current_course_report_status(course, request),
             "course_report_mode": False,
-            "report_reused": stored_report is not None,
+            "report_reused": stored_report is not None and not force,
             "report_generated_at": stored_report.generated_at if stored_report else None,
+            "new_submissions_count": (
+                exercise.submissions.filter(created__gt=stored_report.generated_at).count()
+                if stored_report else 0
+            ),
             "report_mode_label": (
                 "%d newest per student" % newest if newest else
                 "All submissions" if include_all else "Best per student"
@@ -1573,12 +1580,13 @@ def dolos_hub_report(request, course_key=None, exercise_key=None, course=None, e
     """
     newest = _newest_submission_count(request)
     include_all = request.GET.get("all") == "1" and newest is None
+    force = request.GET.get("force") == "1"
     stored_report = None
     if newest is None:
         stored_report = ExerciseDolosReport.objects.filter(
             exercise=exercise, include_all=include_all
         ).first()
-    if stored_report:
+    if stored_report and not force:
         return JsonResponse({
             "status": "ready",
             "report_id": stored_report.report_id,

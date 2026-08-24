@@ -211,6 +211,44 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertTrue(ajax_response.json()["reused"])
         generate_report.assert_not_called()
 
+    @patch("review.views._generate_dolos_report", return_value="NEW_REPORT")
+    def test_dolos_hub_can_force_regeneration_of_stored_report(self, generate_report):
+        stored_report = ExerciseDolosReport.objects.create(
+            exercise=self.exercise,
+            include_all=False,
+            report_id="STORED_REPORT",
+            submissions_included=2,
+        )
+        Submission.objects.filter(pk=self.submission_b.pk).update(
+            created=stored_report.generated_at + timedelta(seconds=1)
+        )
+        session = self.client.session
+        session["legacy_radar"] = False
+        session.save()
+        page_url = reverse(
+            "dolos_hub_exercise",
+            kwargs={"course_key": self.course.key, "exercise_key": self.exercise.key},
+        )
+        report_url = reverse(
+            "dolos_hub_exercise_report",
+            kwargs={"course_key": self.course.key, "exercise_key": self.exercise.key},
+        )
+
+        page_response = self.client.get(page_url)
+        forced_page_response = self.client.get(page_url + "?force=1")
+        ajax_response = self.client.get(report_url + "?force=1")
+
+        self.assertContains(page_response, "1 new submission since last analysis")
+        self.assertContains(page_response, "Redo analysis")
+        self.assertEqual(
+            forced_page_response.context["report_status_url"], report_url + "?force=1"
+        )
+        self.assertEqual(ajax_response.json()["report_id"], "NEW_REPORT")
+        self.assertFalse(ajax_response.json()["reused"])
+        generate_report.assert_called_once()
+        stored_report.refresh_from_db()
+        self.assertEqual(stored_report.report_id, "NEW_REPORT")
+
     @patch("review.views.requests.post")
     def test_sends_provider_submission_keys_to_cheatersheet(self, post):
         response = Mock(status_code=201)
