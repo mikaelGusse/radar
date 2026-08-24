@@ -58,7 +58,7 @@
 </a>
 
 <div class="bulk-comparison-section" style="margin-top: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 5px;">
-	<h5>Bulk Create Comparisons in Cheatersheet</h5>
+	<h5>Bulk Create Comparisons in CheaterSheet</h5>
 	<div class="form-inline">
 		<label for="similarity-threshold">Similarity threshold (%): </label>
 		<input type="number" id="similarity-threshold" class="form-control" min="0" max="100" value="80" style="width: 80px; margin: 0 10px;">
@@ -168,7 +168,7 @@ $(function() {
 			return;
 		}
 
-		if (!confirm(`Found ${comparisons.length} comparisons above ${threshold}% similarity. Create all comparisons in Cheatersheet?`)) {
+		if (!confirm(`Found ${comparisons.length} comparisons above ${threshold}% similarity. Create all comparisons in CheaterSheet?`)) {
 			button.prop('disabled', false).text('Create Comparisons Above Threshold');
 			progressDiv.hide();
 			return;

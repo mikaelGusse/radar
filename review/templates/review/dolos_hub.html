@@ -2,55 +2,109 @@
 
 {% block head %}
 <style>
-	.hub-bar { display: flex; align-items: center; gap: .5rem; margin-bottom: .4rem; }
-	.hub-tabs { display: flex; flex-wrap: nowrap; gap: .3rem; overflow-x: auto; scrollbar-width: thin; }
-	.hub-tabs a { padding: .25rem .7rem; font-size: .82rem; white-space: nowrap; flex: none; }
-	.hub-controls { display: flex; align-items: center; gap: .3rem; flex: none; margin-left: auto; }
-	.hub-controls small { color: var(--pico-muted-color); white-space: nowrap; }
-	.hub-controls a { padding: .2rem .6rem; font-size: .78rem; }
-	.hub-frame { flex: 1; width: 100%; min-height: 72vh; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); background: #fff; }
+	main.app-main { padding: .2rem; }
+	.hub-layout { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+	.hub-tabs { display: flex; flex-direction: row; gap: .2rem; overflow-x: auto; padding-bottom: .2rem; margin-bottom: .2rem; scrollbar-width: thin; }
+	.hub-tabs a { display: block; flex: none; width: auto; max-width: 13rem; margin: 0; padding: .25rem .55rem; font-size: .76rem; line-height: 1.2; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.hub-tabs .report-cached { margin-left: .25rem; color: #18733c; font-weight: 700; }
+	.hub-tabs a:not(.outline) .report-cached { color: #fff; }
+	.hub-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+	.hub-controls { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .2rem; }
+	.hub-students-link { display: inline-flex; align-items: center; flex: none; min-height: 2.1rem; padding: .3rem .8rem; font-size: .8rem; }
+	.hub-mode-switch { display: flex; align-items: center; gap: .4rem; }
+	.hub-mode-label { color: var(--pico-muted-color); font-size: .78rem; white-space: nowrap; }
+	.hub-mode-options { display: inline-flex; align-items: stretch; border: 1px solid var(--pico-primary); border-radius: 6px; overflow: hidden; }
+	.hub-mode-options a { display: inline-flex; align-items: center; justify-content: center; min-height: 2.1rem; margin: 0; padding: .3rem .6rem; border: 0; border-radius: 0; background: transparent; color: var(--pico-primary); font-size: .78rem; line-height: 1; white-space: nowrap; }
+	.hub-mode-options a + a { border-left: 1px solid var(--pico-primary); }
+	.hub-mode-options a[aria-current="true"] { background: var(--pico-primary); color: var(--pico-primary-inverse); font-weight: 700; }
+	.hub-newest-form { display: flex; align-items: center; gap: .25rem; margin: 0 0 0 .15rem; }
+	.hub-newest-form label, .hub-newest-form span { margin: 0; font-size: .78rem; white-space: nowrap; }
+	.hub-newest-form input { width: 4rem; height: 2.1rem; margin: 0; padding: .2rem .35rem; font-size: .78rem; }
+	.hub-newest-form button { width: auto; height: 2.1rem; margin: 0; padding: .3rem .65rem; font-size: .78rem; white-space: nowrap; }
+	.hub-pair-actions { display: none; align-items: center; gap: .5rem; margin-bottom: .4rem; }
+	.hub-pair-actions.visible { display: flex; }
+	.hub-pair-actions form { display: flex; align-items: center; gap: .5rem; width: fit-content; margin: 0; }
+	.hub-pair-actions button { width: auto; margin: 0; padding: .3rem .65rem; font-size: .82rem; }
+	.hub-pair-actions small { color: var(--pico-muted-color); }
+	.hub-frame { flex: 1; width: 100%; height: calc(100vh - 6.5rem); min-height: calc(100vh - 6.5rem); border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); background: #fff; }
 	.hub-multi-report { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-top: .75rem; }
 	.hub-multi-report p { margin: 0; }
+	.hub-cache-notice { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin: .15rem 0 .35rem; color: var(--pico-muted-color); font-size: .8rem; }
+	.hub-cache-notice form { margin: 0; }
+	.hub-cache-notice button { width: auto; margin: 0; padding: .25rem .55rem; font-size: .78rem; }
 	.hub-multi-report a[role="button"] { margin: 0; padding: .4rem .7rem; font-size: .85rem; }
 	.hub-exercise-reports { display: flex; flex-direction: column; gap: 1.5rem; }
 	.hub-exercise-reports .hub-frame { min-height: 60vh; }
 	.hub-multi-report .warning { background: #fff3cd; border: 1px solid #ffc107; border-radius: var(--pico-border-radius); padding: 1rem; }
 	.hub-multi-report .warning ul { margin: 0.5rem 0 0 1.5rem; }
+	@media (max-width: 760px) {
+		.hub-controls { align-items: flex-start; flex-wrap: wrap; }
+		.hub-mode-switch { flex-wrap: wrap; }
+	}
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="hub-bar">
+<div class="hub-layout">
 	<nav class="hub-tabs">
-		{% if not course_report_mode %}
 		<a href="{% url 'dolos_hub' course_key=course.key %}?course_report=1"
-		   role="button" class="secondary outline">Whole Course</a>
-		{% endif %}
+		   role="button" class="{% if not course_report_mode %}secondary outline{% endif %}">Whole Course</a>
 		{% for ex in exercises %}
-		<a href="{% url 'dolos_hub_exercise' course_key=course.key exercise_key=ex.key %}{% if include_all %}?all=1{% endif %}"
-		   role="button" class="{% if course_report_mode or current_exercise.key != ex.key %}secondary outline{% endif %}">{{ ex.name }}</a>
+		<a href="{% url 'dolos_hub_exercise' course_key=course.key exercise_key=ex.key %}{% if newest %}?newest={{ newest }}{% elif include_all %}?all=1{% endif %}"
+		   role="button" class="{% if course_report_mode or current_exercise.key != ex.key %}secondary outline{% endif %}"
+		   {% if ex.dolos_report_cached_best or ex.dolos_report_cached_all %}title="Cached:{% if ex.dolos_report_cached_best %} Best per student{% endif %}{% if ex.dolos_report_cached_all %} All submissions{% endif %}"{% endif %}>{{ ex.name }}{% if course_report_mode %}{% if ex.dolos_report_cached_best %}<span class="report-cached" aria-label="Best per student report cached">B&#10003;</span>{% endif %}{% if ex.dolos_report_cached_all %}<span class="report-cached" aria-label="All submissions report cached">A&#10003;</span>{% endif %}{% elif not newest %}{% if include_all and ex.dolos_report_cached_all or not include_all and ex.dolos_report_cached_best %}<span class="report-cached" aria-label="Report cached">&#10003;</span>{% endif %}{% endif %}</a>
 		{% endfor %}
 	</nav>
+	<div class="hub-main">
 	<div class="hub-controls">
-		<a href="{% url 'students_hub' course_key=course.key %}" role="button" class="secondary outline"
-		   title="Look up a student's similarity across every exercise">Students</a>
-		<small>Per student:</small>
-		<a href="{{ request.path }}" role="button" class="{% if include_all %}secondary outline{% endif %}"
-		   title="One submission per student (best grade)">Best</a>
-		<a href="{{ request.path }}?all=1" role="button" class="{% if not include_all %}secondary outline{% endif %}"
-		   title="Every valid submission, including multiple per student">All</a>
+		<a href="{% url 'students_hub' course_key=course.key %}{% if include_all %}?all=1{% endif %}"
+		   role="button" class="secondary outline hub-students-link"
+		   title="Review student similarity across every exercise">Student overview</a>
+		{% if not course_report_mode %}
+		<div class="hub-mode-switch">
+			<span class="hub-mode-label">Submission set:</span>
+			<div class="hub-mode-options" role="group" aria-label="Submission set">
+				<a href="{{ request.path }}"{% if not include_all and not newest %} aria-current="true"{% endif %}
+				   title="Use one submission per student with the best grade">Best per student</a>
+				<a href="{{ request.path }}?all=1"{% if include_all %} aria-current="true"{% endif %}
+				   title="Use every valid submission, including multiple per student">All submissions</a>
+				<a href="{{ request.path }}?newest=3"{% if newest %} aria-current="true"{% endif %}
+				   title="Choose how many newest submissions to use per student">Newest per student</a>
+			</div>
+			{% if newest %}
+			<form class="hub-newest-form" method="get" action="{{ request.path }}">
+				<label for="newest-count">Include</label>
+				<input id="newest-count" type="number" name="newest" min="1" max="100" value="{{ newest }}"
+					aria-label="Newest submissions per student" title="Number of newest submissions to use per student">
+				<span>newest submissions per student</span>
+				<button type="submit">Apply</button>
+			</form>
+			{% endif %}
+		</div>
+		{% endif %}
 	</div>
-</div>
 
 {% if course_report_mode %}
 {% include 'review/_course_report_panel.html' %}
+{% endif %}
+
+{% if report_reused %}
+<div class="hub-cache-notice">
+	<span><strong>Using cached report.</strong> {{ report_mode_label }} report generated {{ report_generated_at|date:"Y-m-d H:i" }}.</span>
+	{% if new_submissions_count %}<strong>{{ new_submissions_count }} new submission{{ new_submissions_count|pluralize }} since last analysis.</strong>{% endif %}
+	<form method="get" action="{{ request.path }}">
+		{% if include_all %}<input type="hidden" name="all" value="1">{% endif %}
+		<input type="hidden" name="force" value="1">
+		<button type="submit" class="secondary outline">Redo analysis</button>
+	</form>
+</div>
 {% endif %}
 
 {% if report_url or report_urls %}
 {% if report_urls %}
 <!-- Multiple per-exercise reports -->
 <div class="hub-multi-report">
-	<p><strong>Course report ready.</strong> {{ exercises_processed }} exercise report(s) generated.</p>
+	<p><strong>Course report ready.</strong> {{ exercises_processed }} exercise report(s) available.{% if reports_reused %} {{ reports_reused }} reused from cache.{% endif %}</p>
 	<a href="{% url 'students_hub' course_key=course.key %}" role="button" class="secondary">Open Students View</a>
 	{% if exercises_failed %}
 	<article class="warning">
@@ -65,13 +119,15 @@
 </div>
 {% else %}
 <!-- Single report (legacy format) -->
-<iframe class="hub-frame" src="{{ report_url }}" title="Dolos report"></iframe>
+{% include 'review/_dolos_cheatersheet_toolbar.html' %}
+<iframe class="hub-frame" data-report-id="{{ report_id }}" src="{{ report_url }}" title="Dolos report"></iframe>
 {% endif %}
 {% elif loading %}
 <article id="hub-status" aria-busy="true">
 	<p id="hub-status-text">Generating the Dolos report&hellip; this can take a while for large exercises.</p>
 	<progress id="hub-status-progress"></progress>
 </article>
+{% include 'review/_dolos_cheatersheet_toolbar.html' %}
 <iframe class="hub-frame" id="hub-frame" style="display:none;" title="Dolos report"></iframe>
 <script>
 (function () {
@@ -80,9 +136,19 @@
 		.then(function (data) {
 			if (data.status === "ready") {
 				var frame = document.getElementById("hub-frame");
+				frame.dataset.reportId = data.report_id;
 				frame.src = data.report_url;
 				frame.style.display = "";
-				document.getElementById("hub-status").remove();
+				var status = document.getElementById("hub-status");
+				if (data.reused) {
+					var progress = document.getElementById("hub-status-progress");
+					if (progress) { progress.remove(); }
+					status.removeAttribute("aria-busy");
+					document.getElementById("hub-status-text").textContent =
+						"Using cached " + data.mode + " report.";
+				} else {
+					status.remove();
+				}
 			} else {
 				var progress = document.getElementById("hub-status-progress");
 				if (progress) { progress.remove(); }
@@ -104,4 +170,46 @@
 {% else %}
 <article>{{ message }}</article>
 {% endif %}
+	</div>
+</div>
+
+<script>
+(function () {
+	var frame = document.querySelector(".hub-frame");
+	var toolbar = document.getElementById("hub-pair-actions");
+	var form = document.getElementById("hub-cheatersheet-form");
+	if (!frame || !toolbar || !form) { return; }
+
+	var lastPair = null;
+	function syncSelectedPair() {
+		var reportId = frame.dataset.reportId;
+		var match = null;
+		try {
+			match = frame.contentWindow.location.hash.match(/\/pairs\/(\d+)/);
+		} catch (error) {
+			toolbar.classList.remove("visible");
+			return;
+		}
+		var pairId = match && match[1];
+		if (!reportId || !pairId) {
+			lastPair = null;
+			toolbar.classList.remove("visible");
+			return;
+		}
+		if (lastPair !== pairId) {
+			form.action = form.dataset.actionTemplate
+				.replace("REPORT_ID", encodeURIComponent(reportId))
+				.replace(/0\/$/, encodeURIComponent(pairId) + "/");
+			form.querySelector("button").disabled = false;
+			form.querySelector("button").textContent = "Send current pair to CheaterSheet";
+			form.querySelector(".cheatersheet-status").textContent = "";
+			lastPair = pairId;
+		}
+		toolbar.classList.add("visible");
+	}
+
+	frame.addEventListener("load", syncSelectedPair);
+	window.setInterval(syncSelectedPair, 500);
+})();
+</script>
 {% endblock %}

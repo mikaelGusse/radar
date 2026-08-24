@@ -149,6 +149,12 @@
 		}
 	}
 
+	function idleButtonText(btn) {
+		return btn && btn.getAttribute('data-force') === '1'
+			? 'Regenerate Course Report'
+			: 'Generate Course Report';
+	}
+
 	function stopPolling() {
 		if (pollHandle) {
 			window.clearInterval(pollHandle);
@@ -177,7 +183,7 @@
 		setBusy(false);
 		var btn = el('generateCourseBtn');
 		if (btn) {
-			btn.textContent = 'Generate Course Report';
+			btn.textContent = idleButtonText(btn);
 		}
 		stopPolling();
 	}
@@ -212,7 +218,8 @@
 		setCourseMeta(data && data.completed_at);
 		setBusy(false);
 		if (btn) {
-			btn.textContent = 'Generate Course Report';
+			btn.setAttribute('data-force', '1');
+			btn.textContent = idleButtonText(btn);
 		}
 		stopPolling();
 	}
@@ -231,7 +238,13 @@
 		setHint(null);
 		setProgressBar(null);
 
-		fetch(generateUrl, {
+		var btn = el('generateCourseBtn');
+		var requestUrl = generateUrl;
+		if (btn && btn.getAttribute('data-force') === '1') {
+			requestUrl += (requestUrl.indexOf('?') === -1 ? '?' : '&') + 'force=1';
+		}
+
+		fetch(requestUrl, {
 			method: 'GET',
 			headers: { 'X-Requested-With': 'XMLHttpRequest' }
 		})

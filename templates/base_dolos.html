@@ -29,6 +29,7 @@
 				{% for i in hierarchy %}{% if i.1 %}<a href="{{ i.1 }}">{{ i.0 }}</a>{% else %}{{ i.0 }}{% endif %}{% if not forloop.last %} <small>/</small> {% endif %}{% endfor %}
 			</span>
 			<span class="spacer"></span>
+			<a href="/cheatersheet/" role="button" class="secondary outline">CheaterSheet</a>
 			<a href="{% url 'toggle_radar_mode' %}" role="button" class="secondary outline">
 				&#8646; Switch to {% if request.session.legacy_radar == False %}Legacy Radar{% else %}New Radar{% endif %}
 			</a>
@@ -41,5 +42,37 @@
 	<main class="app-main container-fluid">
 		{% block content %}{% endblock %}
 	</main>
+	<script>
+	document.addEventListener("submit", function (event) {
+		var form = event.target;
+		if (!form.matches(".cheatersheet-form")) { return; }
+
+		event.preventDefault();
+		var button = form.querySelector("button[type=submit]");
+		var status = form.querySelector(".cheatersheet-status");
+		var originalText = button.textContent;
+		button.disabled = true;
+		button.textContent = "Sending...";
+		status.textContent = "";
+
+		fetch(form.action, {
+			method: "POST",
+			body: new FormData(form),
+			headers: { "X-Requested-With": "XMLHttpRequest" }
+		}).then(function (response) {
+			return response.json().then(function (data) {
+				if (!response.ok) { throw new Error(data.error || "CheaterSheet rejected the comparison"); }
+				return data;
+			});
+		}).then(function () {
+			button.textContent = "Sent to CheaterSheet";
+			status.textContent = "Comparison created";
+		}).catch(function (error) {
+			button.disabled = false;
+			button.textContent = originalText;
+			status.textContent = error.message;
+		});
+	});
+	</script>
 </body>
 </html>

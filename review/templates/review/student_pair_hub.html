@@ -13,8 +13,11 @@
 	.pair-table th, .pair-table td { padding: .48rem .52rem; text-align: left; border-bottom: 1px solid var(--pico-muted-border-color); vertical-align: top; }
 	.pair-table th { font-size: .8rem; color: var(--pico-muted-color); font-weight: 600; }
 	.mini-comparisons { display: flex; flex-direction: column; gap: .35rem; }
-	.mini-comparisons a { display: inline-block; width: fit-content; padding: .35rem .65rem; border-radius: var(--pico-border-radius); background: var(--pico-primary); color: var(--pico-primary-inverse); text-decoration: none; }
-	.mini-comparisons .meta { color: var(--pico-muted-color); font-size: .82rem; }
+	.mini-actions { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+	.mini-actions a { display: inline-block; width: fit-content; padding: .35rem .65rem; border-radius: var(--pico-border-radius); background: var(--pico-primary); color: var(--pico-primary-inverse); text-decoration: none; }
+	.cheatersheet-form { display: flex; align-items: center; gap: .4rem; width: fit-content; margin: 0; }
+	.cheatersheet-form button { width: auto; margin: 0; padding: .35rem .65rem; font-size: .85rem; white-space: nowrap; }
+	.cheatersheet-status { display: block; color: var(--pico-muted-color); font-size: .78rem; }
 	.muted { color: var(--pico-muted-color); }
 </style>
 {% endblock %}
@@ -66,10 +69,18 @@
 					<td>
 						<div class="mini-comparisons">
 							{% for comparison in row.comparison_rows %}
-							<a href="{% url 'dolos_mini_comparison' course_key=course.key a_key=student_a.key b_key=student_b.key exercise_key=row.exercise.key left_submission_id=comparison.left_submission_id right_submission_id=comparison.right_submission_id %}">
-								Open Dolos report {{ comparison.similarity|percent }}
-							</a>
-							<div class="meta">{{ comparison.left_path }} vs {{ comparison.right_path }}</div>
+							<div class="mini-actions">
+								<a href="{% url 'dolos_mini_comparison' course_key=course.key a_key=student_a.key b_key=student_b.key exercise_key=row.exercise.key left_submission_id=comparison.left_submission_id right_submission_id=comparison.right_submission_id %}">
+									Open Dolos report {{ comparison.similarity|percent }}
+								</a>
+								<form class="cheatersheet-form" method="post" action="{% url 'create_cheatersheet_comparison' course_key=course.key left_submission_id=comparison.left_submission_id right_submission_id=comparison.right_submission_id %}">
+									{% csrf_token %}
+									<input type="hidden" name="similarity" value="{{ comparison.similarity }}">
+									<input type="hidden" name="comment" value="Radar Dolos comparison: {{ comparison.similarity|percent }} similarity in {{ row.exercise.name }}">
+									<button type="submit" class="secondary outline">Send to CheaterSheet</button>
+									<span class="cheatersheet-status" aria-live="polite"></span>
+								</form>
+							</div>
 							{% endfor %}
 						</div>
 					</td>

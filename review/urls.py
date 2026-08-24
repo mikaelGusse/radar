@@ -19,6 +19,8 @@ from review.views import (
     generate_course_dolos_async,
     check_course_dolos_task,
     check_course_dolos_task_current,
+    create_cheatersheet_comparison,
+    create_cheatersheet_comparison_from_dolos,
     generate_cross_course_dolos_view,
     generate_dolos_view,
     go_to_dolos_view,
@@ -96,6 +98,18 @@ urlpatterns = [
         r'^(?P<course_key>\w+)/dolos_hub/students/group/(?P<member_keys>[\w-]+)/$',
         student_group_hub,
         name='student_group_hub'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/cheatersheet/'
+        r'(?P<left_submission_id>\d+)-(?P<right_submission_id>\d+)/$',
+        create_cheatersheet_comparison,
+        name='create_cheatersheet_comparison'
+    ),
+    re_path(
+        r'^(?P<course_key>\w+)/dolos_hub/cheatersheet/report/'
+        r'(?P<report_id>[\w-]+)/(?P<pair_id>\d+)/$',
+        create_cheatersheet_comparison_from_dolos,
+        name='create_cheatersheet_comparison_from_dolos'
     ),
     re_path(
         r'^(?P<course_key>\w+)/dolos_hub/(?P<exercise_key>\w+)/$',

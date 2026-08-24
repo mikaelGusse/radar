@@ -1,0 +1,8 @@
+<div class="hub-pair-actions" id="hub-pair-actions">
+	<form class="cheatersheet-form" id="hub-cheatersheet-form" method="post"
+		  data-action-template="{% url 'create_cheatersheet_comparison_from_dolos' course_key=course.key report_id='REPORT_ID' pair_id=0 %}">
+		{% csrf_token %}
+		<button type="submit" class="secondary outline">Send current pair to CheaterSheet</button>
+		<small class="cheatersheet-status" aria-live="polite"></small>
+	</form>
+</div>

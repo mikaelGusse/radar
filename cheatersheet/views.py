@@ -101,7 +101,7 @@ class cheatersheet_proxy_web_view(View):
 @login_required
 def cheatersheet_api_add_comparison(request, submission_id):
     """
-    Proxy for adding a flag for a particular submission to the cheatersheet API.
+    Proxy for adding a flag for a particular submission to the CheaterSheet API.
     """
     try:
         invalid_values = {None, '', 'None', 'null', 'undefined'}

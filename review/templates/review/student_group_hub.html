@@ -38,7 +38,7 @@
 	<div class="group-card">
 		<div class="group-members">
 			{% for member in group_students %}
-			<a href="{% url 'student_hub' course_key=course.key student_key=member.key %}">{{ member.display_name }}</a>
+			<a href="{% url 'student_hub' course_key=course.key student_key=member.key %}{% if include_all %}?all=1{% endif %}">{{ member.display_name }}</a>
 			{% endfor %}
 		</div>
 	</div>
@@ -77,9 +77,9 @@
 						<a href="{% url 'dolos_hub_exercise' course_key=course.key exercise_key=row.exercise.key %}">{{ row.exercise.name }}</a>
 					</td>
 					<td>
-						<a href="{% url 'student_hub' course_key=course.key student_key=row.left_key %}">{{ row.left_name }}</a>
+						<a href="{% url 'student_hub' course_key=course.key student_key=row.left_key %}{% if include_all %}?all=1{% endif %}">{{ row.left_name }}</a>
 						and
-						<a href="{% url 'student_hub' course_key=course.key student_key=row.right_key %}">{{ row.right_name }}</a>
+						<a href="{% url 'student_hub' course_key=course.key student_key=row.right_key %}{% if include_all %}?all=1{% endif %}">{{ row.right_name }}</a>
 					</td>
 					<td>{{ row.similarity|percent }}</td>
 					<td>

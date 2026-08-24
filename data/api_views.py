@@ -9,9 +9,9 @@ from django.conf import settings
 
 def _forward_to_cheatersheet(request, path=''):
     """
-    Forward API calls to cheatersheet service.
+    Forward API calls to the CheaterSheet service.
     """
-    # Get cheatersheet server URL from settings
+    # Get the CheaterSheet server URL from settings
     cheatersheet_url = getattr(settings, 'CHEATERSHEET_WEB_SERVER_URL', 'http://localhost:8072')
     token = getattr(settings, 'CHEATERSHEET_API_TOKEN', '')
 
@@ -57,7 +57,7 @@ def _forward_to_cheatersheet(request, path=''):
     else:
         return Response({'error': 'Method not allowed'}, status=405)
 
-    # Return the response from cheatersheet
+    # Return the response from CheaterSheet
     try:
         return Response(response.json(), status=response.status_code)
     except ValueError:
@@ -68,12 +68,12 @@ def _forward_to_cheatersheet(request, path=''):
             status=response.status_code
         )
 
-# Cheatersheet API proxy views
+# CheaterSheet API proxy views
 @api_view(['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def cheatersheet_api_proxy(request, path=''):
     """
-    Proxy API calls to cheatersheet service
+    Proxy API calls to the CheaterSheet service
     """
     try:
         return _forward_to_cheatersheet(request, path)
@@ -85,7 +85,7 @@ def cheatersheet_api_proxy(request, path=''):
 @permission_classes([IsAuthenticated])
 def import_imgpt_proxy(request):
     """
-    Proxy import-imgpt calls to the cheatersheet API.
+    Proxy import-imgpt calls to the CheaterSheet API.
     """
     try:
         return _forward_to_cheatersheet(request, 'import-imgpt/')
