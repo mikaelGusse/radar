@@ -14,6 +14,62 @@ CHEATERSHEET_WEB_SERVER_URL = getattr(settings, 'CHEATERSHEET_WEB_SERVER_URL', '
 CHEATERSHEET_PROXY_WEB_URL = getattr(settings, 'CHEATERSHEET_PROXY_WEB_URL', '/cheatersheet/')
 
 logger = logging.getLogger("radar.cheatersheet")
+
+
+def send_cheatersheet_comparison(payload, submission_id):
+    invalid_values = {None, '', 'None', 'null', 'undefined'}
+    submission_id = str(submission_id)
+    payload = dict(payload.items())
+    payload.pop('csrfmiddlewaretoken', None)
+    other_submission_id = payload.get('other_submission_id')
+
+    if submission_id in invalid_values or other_submission_id in invalid_values:
+        return JsonResponse(
+            {'error': 'Invalid submission identifiers for comparison creation'},
+            status=400,
+        )
+
+    try:
+        response = requests.post(
+            '%s/api/submissions/%s/' % (
+                getattr(
+                    settings,
+                    'CHEATERSHEET_WEB_SERVER_URL',
+                    'http://localhost:8072',
+                ).rstrip('/'),
+                submission_id,
+            ),
+            json=payload,
+            headers={
+                'Authorization': 'Token %s' % settings.CHEATERSHEET_API_TOKEN,
+                'Content-Type': 'application/json',
+            },
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.exception('Failed to create CheaterSheet comparison')
+        return JsonResponse({'error': str(exc)}, status=502)
+
+    try:
+        response_data = response.json()
+    except ValueError:
+        if not response.ok:
+            return JsonResponse(
+                {'error': 'CheaterSheet returned HTTP %d: %s' % (
+                    response.status_code,
+                    response.reason,
+                )},
+                status=response.status_code,
+            )
+        return JsonResponse({'error': 'CheaterSheet returned an invalid response'}, status=502)
+
+    return JsonResponse(
+        response_data,
+        safe=isinstance(response_data, dict),
+        status=response.status_code,
+    )
+
+
 class cheatersheet_proxy_web_view(View):
     @method_decorator(login_required)
     def dispatch(self, request, *args, **kwargs) -> HttpResponse:
@@ -103,37 +159,7 @@ def cheatersheet_api_add_comparison(request, submission_id):
     """
     Proxy for adding a flag for a particular submission to the CheaterSheet API.
     """
-    try:
-        invalid_values = {None, '', 'None', 'null', 'undefined'}
-        submission_id = str(submission_id)
-        other_submission_id = request.POST.get('other_submission_id')
-
-        if submission_id in invalid_values or other_submission_id in invalid_values:
-            return JsonResponse(
-                {'error': 'Invalid submission identifiers for comparison creation'},
-                status=400,
-            )
-
-        token = settings.CHEATERSHEET_API_TOKEN
-
-        target_url = (CHEATERSHEET_WEB_SERVER_URL + '/api/submissions/' + submission_id + '/')
-
-        headers = {
-            'Authorization': f'Token {token}',
-            'Content-Type': 'application/json'
-        }
-
-        # Flag a submission
-        response = requests.post(
-            target_url,
-            json=request.POST,
-            headers=headers
-        )
-
-        return JsonResponse(response.json(), status=response.status_code)
-
-    except Exception as e:
-        return HttpResponse(f"Error adding flag: {e}", status=500)
+    return send_cheatersheet_comparison(request.POST, submission_id)
 
 
 def go_to_cheatersheet_view(request, report_id):

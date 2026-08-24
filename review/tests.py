@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from datetime import timedelta
 
+import requests
 from aplus_client.django.models import ApiNamespace
 from django.contrib.auth import get_user_model
 from django.template.loader import render_to_string
@@ -249,7 +250,7 @@ class CreateCheatersheetComparisonTests(TestCase):
         stored_report.refresh_from_db()
         self.assertEqual(stored_report.report_id, "NEW_REPORT")
 
-    @patch("review.views.requests.post")
+    @patch("cheatersheet.views.requests.post")
     def test_sends_provider_submission_keys_to_cheatersheet(self, post):
         response = Mock(status_code=201)
         response.json.return_value = {"id": 7}
@@ -271,12 +272,12 @@ class CreateCheatersheetComparisonTests(TestCase):
         post.assert_called_once_with(
             "http://cheatersheet.test/api/submissions/providerA/",
             json={
-                "comparison": True,
+                "comparison": "true",
                 "submission_id": "providerA",
                 "student_key": "studentA",
                 "other_submission_id": "providerB",
                 "other_student_key": "studentB",
-                "course_key": 42,
+                "course_key": "42",
                 "similarity": "0.87",
                 "comment": "Review this pair",
             },
@@ -287,8 +288,76 @@ class CreateCheatersheetComparisonTests(TestCase):
             timeout=15,
         )
 
+    @patch("cheatersheet.views.requests.post")
+    def test_new_radar_sends_comparison_like_legacy_radar(self, post):
+        response = Mock(status_code=201)
+        response.json.return_value = {"id": 7}
+        post.return_value = response
+        payload = {
+            "comparison": "true",
+            "submission_id": "providerA",
+            "student_key": "studentA",
+            "other_submission_id": "providerB",
+            "other_student_key": "studentB",
+            "course_key": "42",
+            "similarity": "0.87",
+            "comment": "Review this pair",
+            "csrfmiddlewaretoken": "radar-only",
+        }
+
+        legacy_result = self.client.post(
+            reverse(
+                "cheatersheet_api_add_comparison",
+                kwargs={"submission_id": "providerA"},
+            ),
+            payload,
+        )
+        legacy_call = post.call_args
+        post.reset_mock()
+
+        new_result = self.client.post(
+            reverse(
+                "create_cheatersheet_comparison",
+                kwargs={
+                    "course_key": self.course.key,
+                    "left_submission_id": self.submission_a.pk,
+                    "right_submission_id": self.submission_b.pk,
+                },
+            ),
+            {"similarity": "0.87", "comment": "Review this pair"},
+        )
+
+        self.assertEqual(legacy_result.status_code, 201)
+        self.assertEqual(new_result.status_code, 201)
+        self.assertEqual(post.call_args, legacy_call)
+
+    @patch("cheatersheet.views.requests.post")
+    def test_preserves_non_json_cheatersheet_error(self, post):
+        response = Mock(status_code=404, reason="Not Found", ok=False)
+        response.json.side_effect = requests.exceptions.JSONDecodeError(
+            "Expecting value", "\n<!doctype html>", 1
+        )
+        post.return_value = response
+
+        result = self.client.post(
+            reverse(
+                "create_cheatersheet_comparison",
+                kwargs={
+                    "course_key": self.course.key,
+                    "left_submission_id": self.submission_a.pk,
+                    "right_submission_id": self.submission_b.pk,
+                },
+            )
+        )
+
+        self.assertEqual(result.status_code, 404)
+        self.assertEqual(
+            result.json(),
+            {"error": "CheaterSheet returned HTTP 404: Not Found"},
+        )
+
     @patch("review.views._fetch_dolos_pairs_rows")
-    @patch("review.views.requests.post")
+    @patch("cheatersheet.views.requests.post")
     def test_sends_selected_dolos_pair_to_cheatersheet(self, post, fetch_pairs):
         fetch_pairs.return_value = [{
             "id": "17",

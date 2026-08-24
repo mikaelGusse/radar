@@ -36,6 +36,7 @@ from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_POST
 from kombu import Connection
 
+from cheatersheet.views import send_cheatersheet_comparison
 from data import graph
 from data.models import Comparison, Course, Exercise, ExerciseDolosReport, Student, Submission
 from provider.tasks import generate_course_dolos_task, recompare_all
@@ -2256,45 +2257,16 @@ def create_cheatersheet_comparison(
 
 def _send_cheatersheet_comparison(request, course, left_submission, right_submission):
     payload = {
-        "comparison": True,
+        "comparison": "true",
         "submission_id": left_submission.external_key,
         "student_key": left_submission.student.key,
         "other_submission_id": right_submission.external_key,
         "other_student_key": right_submission.student.key,
-        "course_key": course.api_id,
+        "course_key": str(course.api_id),
         "similarity": request.POST.get("similarity", ""),
         "comment": request.POST.get("comment", "Radar Dolos comparison"),
     }
-    try:
-        response = requests.post(
-            "%s/api/submissions/%s/"
-            % (
-                getattr(
-                    settings,
-                    "CHEATERSHEET_WEB_SERVER_URL",
-                    "http://localhost:8072",
-                ).rstrip("/"),
-                left_submission.external_key,
-            ),
-            json=payload,
-            headers={
-                "Authorization": "Token %s" % settings.CHEATERSHEET_API_TOKEN,
-                "Content-Type": "application/json",
-            },
-            timeout=15,
-        )
-        response_data = response.json()
-    except requests.RequestException as exc:
-        logger.exception("Failed to create CheaterSheet comparison")
-        return JsonResponse({"error": str(exc)}, status=502)
-    except ValueError:
-        return JsonResponse({"error": "CheaterSheet returned an invalid response"}, status=502)
-
-    return JsonResponse(
-        response_data,
-        safe=isinstance(response_data, dict),
-        status=response.status_code,
-    )
+    return send_cheatersheet_comparison(payload, left_submission.external_key)
 
 
 @require_POST
