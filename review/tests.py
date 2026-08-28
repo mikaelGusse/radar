@@ -59,6 +59,28 @@ class CreateCheatersheetComparisonTests(TestCase):
             html,
         )
 
+    def test_legacy_students_view_uses_student_number_when_name_is_missing(self):
+        html = render_to_string(
+            "review/students_view.html",
+            {
+                "course": self.course,
+                "hierarchy": (("Radar", "/"), (self.course.name, "/course42/")),
+                "exercises": {},
+                "students": [
+                    {
+                        "key": "studentA",
+                        "name": "No Name",
+                        "is_staff": False,
+                        "avg_similarity": "",
+                        "exercises": [],
+                    }
+                ],
+            },
+        )
+
+        self.assertIn(">studentA</a>", html)
+        self.assertNotIn(">No Name</a>", html)
+
     def test_dolos_hub_marks_the_enabled_submission_set(self):
         session = self.client.session
         session["legacy_radar"] = False
