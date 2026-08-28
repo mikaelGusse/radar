@@ -111,8 +111,6 @@ def write_submission_files(work_dir, submissions, label_fn, get_text):
         exercise = submission.exercise
         student = submission.student
         student_label = student.display_name
-        if student_label != student.key:
-            student_label = "%s (%s)" % (student_label, student.key)
         rows.append(
             {
                 "filename": rel_path,
@@ -169,10 +167,11 @@ def _demo():
     """Self-check with fake submissions; run: ``python -m review.dolos_reports``."""
     def fake(course_key, ex_key, ex_name, course_name, student_key, sub_id, student_name=None):
         course = types.SimpleNamespace(key=course_key, name=course_name)
+        display_name = "%s (%s)" % (student_name, student_key) if student_name else student_key
         return types.SimpleNamespace(
             id=sub_id,
             key=str(sub_id),
-            student=types.SimpleNamespace(key=student_key, display_name=student_name or student_key),
+            student=types.SimpleNamespace(key=student_key, display_name=display_name),
             exercise=types.SimpleNamespace(key=ex_key, name=ex_name, course=course),
             provider_submission_time=None,
         )

@@ -22,6 +22,8 @@ sync between the two pages again.
 	.hub-course-progress .status-title.status-error { color: #8a1f11; }
 	.hub-course-progress .status-hint { font-size: .8rem; color: var(--pico-muted-color); margin-top: .4rem; }
 	.hub-course-progress progress { width: 100%; margin: .55rem 0 .2rem; }
+	.hub-course-game { display: none; width: min(100%, 500px); height: auto; margin: .8rem auto 0; background: #000; cursor: none; touch-action: none; }
+	.hub-course-game.active { display: block; }
 </style>
 
 <div class="hub-course-actions">
@@ -46,9 +48,10 @@ sync between the two pages again.
 	<p class="status-title" id="hubCourseProgressText">{% if course_report_task_status.current_exercise %}Generating report for {{ course_report_task_status.current_exercise }}&hellip; {{ course_report_task_status.exercises_remaining }} exercise(s) left.{% elif course_report_task_status.status == 'pending' %}Generating course-wide report&hellip; this can take a few minutes.{% else %}Queuing course-wide report generation&hellip;{% endif %}</p>
 	<progress id="hubCourseProgressBar"{% if course_report_task_status.exercises_total %} value="{{ course_report_task_status.exercises_done|default:0 }}" max="{{ course_report_task_status.exercises_total }}"{% endif %}></progress>
 	<p class="status-hint" id="hubCourseProgressHint" style="display:none;">{{ course_report_task_status.hint }}</p>
+	<canvas class="hub-course-game{% if course_report_task_status.status == 'pending' %} active{% endif %}" id="canvas" width="500" height="500" aria-label="Pong game to play while the course report is generated"></canvas>
 </div>
 
-<script src="{% static 'course_report.js' %}?v=20260810b"
+<script src="{% static 'course_report.js' %}?v=20260828a"
 	data-generate-url="{% url 'generate_course_dolos_async' course_key=course.key %}"
 	data-check-url-template="{% url 'check_course_dolos_task' course_key=course.key task_id='__TASK__' %}"
 	data-check-current-url="{% url 'check_course_dolos_task_current' course_key=course.key %}"></script>

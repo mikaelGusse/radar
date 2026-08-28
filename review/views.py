@@ -39,6 +39,7 @@ from kombu import Connection
 from cheatersheet.views import send_cheatersheet_comparison
 from data import graph
 from data.models import Comparison, Course, Exercise, ExerciseDolosReport, Student, Submission
+from provider import aplus
 from provider.tasks import generate_course_dolos_task, recompare_all
 from radar.celery import app
 from radar.config import configured_function, provider_config
@@ -2054,6 +2055,17 @@ def students_hub(request, course_key=None, course=None) -> HttpResponse:
     cross-exercise Dolos similarity page."""
     if request.session.get("legacy_radar", True):
         return redirect("students_view", course_key=course.key)
+
+    unnamed_students = course.students.filter(Q(name="") | Q(name="No Name"))
+    if course.provider == "a+" and unnamed_students.exists():
+        try:
+            aplus.sync_student_names(course)
+        except Exception:
+            logger.warning(
+                "Failed to load student names for course=%s",
+                course.key,
+                exc_info=True,
+            )
 
     include_all = request.GET.get("all") == "1"
     latest_course_report_ids = _exercise_report_ids(course, include_all=include_all)

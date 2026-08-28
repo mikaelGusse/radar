@@ -100,6 +100,20 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertContains(newest_response, ">Apply</button>")
         self.assertContains(newest_response, "?newest=3")
 
+    def test_course_report_waiting_panel_includes_active_game(self):
+        html = render_to_string(
+            "review/_course_report_panel.html",
+            {
+                "course": self.course,
+                "course_report_task_status": {"status": "pending"},
+            },
+        )
+
+        self.assertIn(
+            'class="hub-course-game active" id="canvas" width="500" height="500"',
+            html,
+        )
+
     def test_exercise_submissions_selects_n_newest_per_student(self):
         student_b = self.submission_b.student
         base_time = now()
@@ -154,6 +168,8 @@ class CreateCheatersheetComparisonTests(TestCase):
 
     @patch("review.views._build_course_similarity_summary", return_value={})
     def test_students_hub_uses_requested_submission_set(self, build_summary):
+        Student.objects.filter(key="studentA").update(name="Alice Example")
+        Student.objects.filter(key="studentB").update(name="Bob Example")
         ExerciseDolosReport.objects.create(
             exercise=self.exercise,
             include_all=False,
@@ -175,6 +191,8 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertEqual(build_summary.call_args.args[1], ["BEST_REPORT"])
         self.assertEqual(build_summary.call_args.args[2:], (0.83, 1))
         self.assertContains(best_response, 'href="%s" aria-current="true"' % url)
+        self.assertContains(best_response, "Alice Example (studentA)")
+        self.assertContains(best_response, "Bob Example (studentB)")
 
         all_response = self.client.get(url + "?all=1")
         self.assertEqual(build_summary.call_args.args[1], ["ALL_REPORT"])
