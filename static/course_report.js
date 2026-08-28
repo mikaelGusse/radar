@@ -37,6 +37,7 @@
 	var taskId = null;
 	var pollHandle = null;
 	var pollAttempts = 0;
+	var gameHandle = null;
 
 	function el(id) {
 		return document.getElementById(id);
@@ -155,6 +156,74 @@
 			: 'Generate Course Report';
 	}
 
+	function startGame() {
+		var canvas = el('canvas');
+		if (!canvas || gameHandle) {
+			return;
+		}
+		canvas.classList.add('active');
+		var ctx = canvas.getContext('2d');
+		var paddles = [0, 0];
+		var ball = [0, 0, -0.016, 0];
+		var score = [0, 0];
+		var cursor = 0;
+		var reactionSpeed = 6;
+		var reactionDistance = -0.5;
+
+		canvas.addEventListener('pointermove', function (event) {
+			var bounds = canvas.getBoundingClientRect();
+			cursor = (event.clientY - bounds.top) / bounds.height * 2 - 1;
+		});
+		ctx.textAlign = 'center';
+		ctx.font = '50px "Press Start 2P", Arial, sans-serif';
+		ctx.fillStyle = 'white';
+
+		gameHandle = window.setInterval(function () {
+			if (Math.abs(ball[0]) >= 1) {
+				score[ball[0] < 0 ? 1 : 0] += 1;
+				ball = [0, 0, ball[0] < 0 ? -0.016 : 0.016, 0];
+				reactionDistance = -0.5;
+				reactionSpeed = 6;
+				return;
+			}
+			ctx.clearRect(0, 0, 500, 500);
+			if (Math.abs(ball[1]) >= 1) { ball[3] = -ball[3]; }
+			ball[0] += ball[2];
+			ball[1] += ball[3];
+			paddles[0] = cursor;
+			if (ball[0] > reactionDistance && ball[2] > 0) {
+				paddles[1] += ball[1] > paddles[1] + 10 / 250 ? reactionSpeed / 250 : ball[1] < paddles[1] - 10 / 250 ? -reactionSpeed / 250 : 0;
+			}
+			if (Math.abs(paddles[0]) > 210 / 250) { paddles[0] = paddles[0] / Math.abs(paddles[0]) * 210 / 250; }
+			if (Math.abs(paddles[1]) > 210 / 250) { paddles[1] = paddles[1] / Math.abs(paddles[1]) * 210 / 250; }
+			ctx.fillRect(20, paddles[0] * 250 + 225, 10, 50);
+			ctx.fillRect(470, paddles[1] * 250 + 225, 10, 50);
+			ctx.fillRect(ball[0] * 250 + 245, ball[1] * 250 + 245, 10, 10);
+			ctx.fillText(score[0] + ' : ' + score[1], 250, 100);
+			if ((ball[0] > -220 / 250 && ball[0] + ball[2] <= -220 / 250 && Math.abs(paddles[0] - ball[1] - ball[3] * (-220 / 250 - ball[0]) / ball[2]) <= 30 / 250) ||
+				(ball[0] < 220 / 250 && ball[0] + ball[2] >= 220 / 250 && Math.abs(paddles[1] - ball[1] - ball[3] * (220 / 250 - ball[0]) / ball[2]) <= 30 / 250)) {
+				var alpha = (ball[0] < 0 ? 1 : -1) * (7 / 16 * (Math.atan(ball[3] / -ball[2]) + Math.PI / 2) + 0.004375 * Math.PI * (ball[1] - paddles[ball[0] < 0 ? 0 : 1]) * 500 + 27 / 64 * Math.PI - Math.atan(ball[3] / -ball[2]) + Math.PI * 3 / 8);
+				var nextX = ball[2] * Math.cos(alpha) - ball[3] * Math.sin(alpha);
+				var nextY = ball[2] * Math.sin(alpha) + ball[3] * Math.cos(alpha);
+				ball[2] = nextX * 1.02;
+				ball[3] = nextY * 1.02;
+				reactionSpeed = Math.random() * 4.5 + 1.7;
+				reactionDistance = Math.random() * 0.7 - 1;
+			}
+		}, 1000 / 60);
+	}
+
+	function stopGame() {
+		if (gameHandle) {
+			window.clearInterval(gameHandle);
+			gameHandle = null;
+		}
+		var canvas = el('canvas');
+		if (canvas) {
+			canvas.classList.remove('active');
+		}
+	}
+
 	function stopPolling() {
 		if (pollHandle) {
 			window.clearInterval(pollHandle);
@@ -185,6 +254,7 @@
 		if (btn) {
 			btn.textContent = idleButtonText(btn);
 		}
+		stopGame();
 		stopPolling();
 	}
 
@@ -221,6 +291,7 @@
 			btn.setAttribute('data-force', '1');
 			btn.textContent = idleButtonText(btn);
 		}
+		stopGame();
 		stopPolling();
 	}
 
@@ -237,6 +308,7 @@
 		}
 		setHint(null);
 		setProgressBar(null);
+		startGame();
 
 		var btn = el('generateCourseBtn');
 		var requestUrl = generateUrl;
@@ -312,6 +384,7 @@
 					if (btn) {
 						btn.textContent = 'Report In Progress';
 					}
+					startGame();
 					startPolling();
 				} else if (data.status === 'ready') {
 					showReady(data);
@@ -329,6 +402,10 @@
 	var button = el('generateCourseBtn');
 	if (button) {
 		button.addEventListener('click', startCourseReportGeneration);
+	}
+	var initialCanvas = el('canvas');
+	if (initialCanvas && initialCanvas.classList.contains('active')) {
+		startGame();
 	}
 	restoreStatusAfterRefresh();
 })();

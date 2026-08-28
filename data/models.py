@@ -554,7 +554,7 @@ class Student(models.Model):
         name = (self.name or "").strip()
         if not name or name == "No Name":
             return self.key
-        return name
+        return "%s (%s)" % (name, self.key)
 
     def __str__(self):
         return "%s: %s (%s)" % (self.course.name, self.key, self.created)

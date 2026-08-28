@@ -18,6 +18,34 @@ class AplusApiUrlTests(SimpleTestCase):
             "https://plus.example.com/api/v2/submissions/123/",
         )
 
+    @mock.patch("provider.aplus.get_api_client")
+    @mock.patch("provider.aplus.build_api_url", return_value="https://plus.example.com/api/v2/courses/42/students/")
+    def test_sync_student_names_uses_paginated_course_roster(self, build_api_url, get_api_client):
+        unnamed = mock.Mock(key="123456", name="No Name")
+        named = mock.Mock(key="654321", name="Existing Name")
+        students = mock.Mock()
+        students.all.return_value = [unnamed, named]
+        course = SimpleNamespace(api_id=42, students=students)
+        get_api_client.return_value.load_data.side_effect = [
+            {
+                "results": [{"student_id": "123456", "full_name": "Matti Meikäläinen"}],
+                "next": "https://plus.example.com/api/v2/courses/42/students/?page=2",
+            },
+            {
+                "results": [{"student_id": "654321", "full_name": "Updated Name"}],
+                "next": None,
+            },
+        ]
+
+        with mock.patch("provider.aplus.Student.objects") as student_objects:
+            updated = aplus.sync_student_names(course)
+
+        self.assertEqual(updated, 2)
+        self.assertEqual(unnamed.name, "Matti Meikäläinen")
+        self.assertEqual(named.name, "Updated Name")
+        student_objects.bulk_update.assert_called_once_with([unnamed, named], ["name"])
+        build_api_url.assert_called_once()
+
 
 class CourseDolosReportTests(SimpleTestCase):
     @mock.patch("provider.tasks._report_course_progress")

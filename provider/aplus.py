@@ -7,7 +7,7 @@ from aplus_auth.requests import get as aplus_get
 from aplus_auth.payload import Permission, Permissions
 from aplus_client.client import AplusTokenClient
 
-from data.models import URLKeyField
+from data.models import Student, URLKeyField
 from provider import tasks
 import matcher.tasks as matcher_tasks
 import radar.config as config_loaders
@@ -18,6 +18,7 @@ POST_KEY = "submission_id"
 API_SUBMISSION_URL = "/api/v2/submissions/%(sid)s/"
 API_EXERCISE_URL = "/api/v2/exercises/%(eid)s/"
 API_SUBMISSION_LIST_URL = API_EXERCISE_URL + "submissions/"
+API_COURSE_STUDENTS_URL = "/api/v2/courses/%(cid)s/students/"
 
 
 logger = logging.getLogger("radar.provider")
@@ -140,6 +141,34 @@ def get_api_client(course):
         client.session.mount("http://", adapter)
         _api_client = client
     return _api_client
+
+
+def sync_student_names(course):
+    """Fill names for existing Radar students from the A+ course roster."""
+    students_by_key = {student.key: student for student in course.students.all()}
+    url = build_api_url(
+        course,
+        API_COURSE_STUDENTS_URL % {"cid": course.api_id},
+    )
+    changed = []
+    client = get_api_client(course)
+
+    while url:
+        data = client.load_data(url)
+        if not data:
+            break
+        for roster_student in data.get("results", []):
+            student_id = roster_student.get("student_id") or roster_student.get("username")
+            full_name = (roster_student.get("full_name") or "").strip()
+            student = students_by_key.get(URLKeyField.safe_version(str(student_id)))
+            if student and full_name and student.name != full_name:
+                student.name = full_name
+                changed.append(student)
+        url = data.get("next")
+
+    if changed:
+        Student.objects.bulk_update(changed, ["name"])
+    return len(changed)
 
 
 
