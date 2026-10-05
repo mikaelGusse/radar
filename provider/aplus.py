@@ -7,7 +7,7 @@ from aplus_auth.requests import get as aplus_get
 from aplus_auth.payload import Permission, Permissions
 from aplus_client.client import AplusTokenClient
 
-from data.models import Student, URLKeyField
+from data.models import Exercise, Student, URLKeyField
 from provider import tasks
 import matcher.tasks as matcher_tasks
 import radar.config as config_loaders
@@ -140,6 +140,33 @@ def get_api_client(course):
         client.session.mount("http://", adapter)
         _api_client = client
     return _api_client
+
+
+def import_missing_course_metadata(course, refresh=False):
+    if course.provider != "a+":
+        return
+    client = get_api_client(course)
+    if refresh or not course.exercises.exists():
+        data = client.load_data(build_api_url(course, course.url), skip_cache=refresh)
+        if data is None:
+            raise AplusProviderError("The provider returned no course metadata")
+        for exercise_data in submittable_exercises(data.get("exercises", [])):
+            exercise_key = URLKeyField.safe_version(str(exercise_data["id"]))
+            Exercise.objects.get_or_create(
+                course=course,
+                key=exercise_key,
+                defaults={"name": exercise_data.get("display_name") or exercise_key},
+            )
+    if refresh or not course.students.exists():
+        url = build_api_url(course, API_COURSE_STUDENTS_URL % {"cid": course.api_id})
+        roster = client.load_data(url, skip_cache=refresh)
+        if roster is None:
+            raise AplusProviderError("The provider returned no course roster")
+        for roster_student in roster:
+            student_id = roster_student.get("student_id") or roster_student.get("username")
+            if not student_id:
+                continue
+            course.get_student(str(student_id), name=roster_student.get("full_name"))
 
 
 def sync_student_names(course):

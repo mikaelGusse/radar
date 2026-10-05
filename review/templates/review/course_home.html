@@ -30,12 +30,19 @@
 {% endblock %}
 
 {% block content %}
+{% if course.provider == 'a+' and background_state.status == 'ready' %}
+<form method="post" style="margin-bottom: .75rem;">
+	{% csrf_token %}
+	<button type="submit" name="refresh_metadata" value="1" class="secondary outline" title="Refresh course roster and exercises from A+">&#8635; Refresh roster and exercises</button>
+</form>
+{% endif %}
 {% if background_state.status != 'ready' %}
 <h2>{{ course.name }}</h2>
 <nav aria-label="Course navigation">
 	<a href="{% url 'dolos_hub' course_key=course.key %}?course_report=1">Whole Course report</a>
 	<a href="{% url 'students_hub' course_key=course.key %}">Student overview</a>
 </nav>
+{% if course.provider == 'a+' %}<p>Loading course roster and exercises...</p>{% endif %}
 {% include 'review/_background_loading.html' %}
 {% else %}
 <div class="home-wrap">

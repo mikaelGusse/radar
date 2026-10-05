@@ -189,7 +189,7 @@ def _student_flag_stats(course, students):
     ).filter(
         Q(submission_a__student_id__in=student_ids)
         | Q(submission_b__student_id__in=student_ids)
-    ).values_list(
+    ).order_by().values_list(
         "submission_a__student_id", "submission_b__student_id", "similarity"
     )
     stats = {student_id: [0, None] for student_id in student_ids}
@@ -212,6 +212,12 @@ def course_home(request, course_key=None, course=None) -> HttpResponse:
     previously had no obvious home."""
     if request.session.get("legacy_radar", True):
         return redirect("course", course_key=course.key)
+
+    if request.method == "POST" and request.POST.get("refresh_metadata") == "1":
+        version = str(time.time_ns())
+        cache.set("course_home_refresh:%s" % course.pk, version, 86400)
+        cache.set("course_home_version:%s" % course.pk, version, 86400)
+        return redirect(request.get_full_path())
 
     include_all = request.GET.get("all") == "1"
     try:

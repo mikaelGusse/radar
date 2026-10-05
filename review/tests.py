@@ -22,6 +22,121 @@ from review import views
     CHEATERSHEET_API_TOKEN="secret",
 )
 class CreateCheatersheetComparisonTests(TestCase):
+    @override_settings(CACHES={
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "refresh-locks"},
+        "course_report_progress": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "refresh-results"},
+    })
+    @patch("provider.tasks.load_radar_page_data.apply_async")
+    @patch("provider.aplus.get_api_client")
+    def test_course_home_refresh_updates_metadata_in_worker_and_preserves_submissions(self, get_client, enqueue):
+        from provider.tasks import load_radar_page_data
+
+        caches["default"].clear()
+        caches["course_report_progress"].clear()
+        session = self.client.session
+        session["legacy_radar"] = False
+        session.save()
+        self.exercise.override_minimum_match_tokens = 37
+        self.exercise.save()
+        url = reverse("course_home", kwargs={"course_key": self.course.key})
+        response = self.client.post(url + "?all=1&students_page=1", {"refresh_metadata": "1"})
+        self.assertRedirects(response, url + "?all=1&students_page=1")
+        get_client.assert_not_called()
+        enqueue.assert_not_called()
+        poll_url = url + "?all=1&students_page=1&background=1"
+        self.assertEqual(self.client.post(poll_url).json()["status"], "pending")
+        get_client.return_value.load_data.side_effect = [
+            {"exercises": [
+                {"id": "ex1", "display_name": "Changed provider name", "is_submittable": True},
+                {"id": "ex2", "display_name": "New exercise", "is_submittable": True},
+            ]},
+            [
+                {"student_id": "studentA", "full_name": "Updated Alice"},
+                {"student_id": "studentC", "full_name": "New Student"},
+            ],
+        ]
+        load_radar_page_data.run(*enqueue.call_args.kwargs["args"])
+        self.assertEqual(self.client.get(poll_url).json()["status"], "ready")
+        self.assertEqual(get_client.return_value.load_data.call_count, 2)
+        for call in get_client.return_value.load_data.call_args_list:
+            self.assertTrue(call.kwargs["skip_cache"])
+        self.exercise.refresh_from_db()
+        self.assertEqual(self.exercise.name, "Exercise 1")
+        self.assertEqual(self.exercise.override_minimum_match_tokens, 37)
+        self.assertTrue(self.course.exercises.filter(key="ex2").exists())
+        self.assertEqual(self.course.students.get(key="studentA").name, "Updated Alice")
+        self.assertTrue(self.course.students.filter(key="studentC").exists())
+        self.assertEqual(self.course.submissions.count(), 2)
+        self.assertIsNone(caches["default"].get("course_home_refresh:%s" % self.course.pk))
+        self.assertContains(self.client.get(url + "?all=1&students_page=1"), "Refresh roster and exercises")
+        caches["default"].clear()
+        caches["course_report_progress"].clear()
+
+    @override_settings(CACHES={
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "metadata-locks"},
+        "course_report_progress": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "metadata-results"},
+    })
+    @patch("provider.aplus.get_api_client")
+    def test_course_home_worker_imports_missing_metadata_without_legacy_setup(self, get_client):
+        from provider import aplus
+        from provider.tasks import load_radar_page_data
+
+        self.course.exercises.all().delete()
+        self.course.students.all().delete()
+        get_client.return_value.load_data.side_effect = [
+            {"exercises": [{"exercises": [
+                {"id": 71, "display_name": "New Exercise", "is_submittable": True},
+                {"id": 72, "display_name": "Reading", "is_submittable": False},
+            ]}]},
+            [
+                {"student_id": "12345", "full_name": "Alice Example"},
+                {"student_id": None, "username": "bob", "full_name": "No Name"},
+                {"student_id": None, "username": None, "full_name": "No Identifier"},
+            ],
+        ]
+        session = self.client.session
+        session["legacy_radar"] = False
+        session.save()
+        response = self.client.get(reverse("course_home", kwargs={"course_key": self.course.key}))
+        self.assertEqual(response.status_code, 200)
+        get_client.assert_not_called()
+
+        load_radar_page_data.run(self.course.pk, "course_home", [False, 1, "initial"], "metadata-test")
+        state = caches["course_report_progress"].get("metadata-test")
+        self.assertEqual(state["status"], "ready")
+        self.assertEqual(state["result"]["exercise_count"], 1)
+        self.assertEqual(state["result"]["student_count"], 2)
+        self.assertEqual(state["result"]["submission_count"], 0)
+        exercise = self.course.exercises.get(key="71")
+        self.assertEqual(exercise.name, "New Exercise")
+        self.assertEqual(self.course.students.get(key="12345").name, "Alice Example")
+        self.assertEqual(self.course.students.get(key="bob").name, "")
+        exercise.name = "Locally configured name"
+        exercise.override_minimum_match_tokens = 37
+        exercise.save()
+        get_client.return_value.load_data.reset_mock()
+        aplus.import_missing_course_metadata(self.course)
+        get_client.return_value.load_data.assert_not_called()
+        exercise.refresh_from_db()
+        self.assertEqual(exercise.name, "Locally configured name")
+        self.assertEqual(exercise.override_minimum_match_tokens, 37)
+        self.assertEqual(self.course.students.count(), 2)
+        caches["course_report_progress"].delete("metadata-test")
+
+    @patch("provider.aplus.get_api_client")
+    def test_course_metadata_import_skips_filesystem_and_reports_provider_failure(self, get_client):
+        from provider import aplus
+
+        self.course.provider = "filesystem"
+        aplus.import_missing_course_metadata(self.course)
+        get_client.assert_not_called()
+        self.course.provider = "a+"
+        self.course.exercises.all().delete()
+        get_client.return_value.load_data.return_value = None
+        with self.assertRaises(aplus.AplusProviderError):
+            aplus.import_missing_course_metadata(self.course)
+        self.assertFalse(self.course.exercises.exists())
+
     def setUp(self):
         user = get_user_model().objects.create_user("reviewer", password="password")
         self.user = user
