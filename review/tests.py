@@ -39,6 +39,9 @@ class CreateCheatersheetComparisonTests(TestCase):
         session.save()
         self.exercise.override_minimum_match_tokens = 37
         self.exercise.save()
+        student_b = self.course.students.get(key="studentB")
+        student_b.name = "Keep Bob"
+        student_b.save(update_fields=["name"])
         url = reverse("course_home", kwargs={"course_key": self.course.key})
         response = self.client.post(url + "?all=1&students_page=1", {"refresh_metadata": "1"})
         self.assertRedirects(response, url + "?all=1&students_page=1")
@@ -54,6 +57,7 @@ class CreateCheatersheetComparisonTests(TestCase):
                 ]}
             return [
                 {"student_id": "studentA", "full_name": "Updated Alice"},
+                {"student_id": "studentB", "full_name": "No Name"},
                 {"student_id": "studentC", "full_name": "New Student"},
             ]
 
@@ -69,6 +73,7 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertEqual(self.exercise.override_minimum_match_tokens, 37)
         self.assertTrue(self.course.exercises.filter(key="ex2").exists())
         self.assertEqual(self.course.students.get(key="studentA").name, "Updated Alice")
+        self.assertEqual(self.course.students.get(key="studentB").name, "Keep Bob")
         self.assertTrue(self.course.students.filter(key="studentC").exists())
         self.assertEqual(self.course.submissions.count(), 2)
         self.assertIsNone(caches["default"].get("course_home_refresh:%s" % self.course.pk))

@@ -28,9 +28,11 @@ class AplusApiUrlTests(SimpleTestCase):
         roster_client.load_data.side_effect = roster_response
         course = SimpleNamespace(
             provider="a+",
+            pk=42,
             url="https://plus.example.com/api/v2/courses/42/",
             api_id=42,
             get_student=mock.Mock(),
+            students=SimpleNamespace(filter=mock.Mock(return_value=[])),
         )
 
         with (
