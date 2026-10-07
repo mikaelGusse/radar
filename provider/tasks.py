@@ -69,11 +69,21 @@ def load_radar_page_data(course_id, operation, arguments, key):
             include_all, students_page, version = arguments
             refresh_key = "course_home_refresh:%s" % course.pk
             refresh = caches["default"].get(refresh_key) == version
+            metadata_started = time.monotonic()
             aplus.import_missing_course_metadata(course, refresh=refresh)
+            logger.info(
+                "Radar course-home metadata ready course=%s refresh=%s seconds=%.3f",
+                course_id, refresh, time.monotonic() - metadata_started,
+            )
             if refresh and caches["default"].get(refresh_key) == version:
                 caches["default"].delete(refresh_key)
+            build_started = time.monotonic()
             with connection.execute_wrapper(time_query):
                 result = views._build_course_home_data(course, include_all, students_page)
+            logger.info(
+                "Radar course-home data ready course=%s seconds=%.3f",
+                course_id, time.monotonic() - build_started,
+            )
         elif operation == "summary":
             for report_id in arguments[0]:
                 views._fetch_dolos_pairs_rows(report_id)

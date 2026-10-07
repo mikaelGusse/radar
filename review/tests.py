@@ -101,7 +101,10 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertEqual(response.status_code, 200)
         get_client.assert_not_called()
 
-        load_radar_page_data.run(self.course.pk, "course_home", [False, 1, "initial"], "metadata-test")
+        with self.assertLogs("provider.tasks", level="INFO") as task_logs:
+            load_radar_page_data.run(self.course.pk, "course_home", [False, 1, "initial"], "metadata-test")
+        self.assertTrue(any("Radar course-home metadata ready" in message for message in task_logs.output))
+        self.assertTrue(any("Radar course-home data ready" in message for message in task_logs.output))
         state = caches["course_report_progress"].get("metadata-test")
         self.assertEqual(state["status"], "ready")
         self.assertEqual([exercise.key for exercise in state["result"]["exercises"]], ["71"])
