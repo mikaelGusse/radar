@@ -75,11 +75,6 @@ def load_radar_page_data(course_id, operation, arguments, key):
             with connection.execute_wrapper(time_query):
                 result = views._build_course_home_data(course, include_all, students_page)
         elif operation == "summary":
-            if course.provider == "a+":
-                try:
-                    aplus.sync_student_names(course)
-                except Exception:
-                    logger.warning("Background roster refresh failed", exc_info=True)
             for report_id in arguments[0]:
                 views._fetch_dolos_pairs_rows(report_id)
             result = views._build_course_similarity_summary(course, *arguments)

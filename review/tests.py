@@ -104,9 +104,9 @@ class CreateCheatersheetComparisonTests(TestCase):
         load_radar_page_data.run(self.course.pk, "course_home", [False, 1, "initial"], "metadata-test")
         state = caches["course_report_progress"].get("metadata-test")
         self.assertEqual(state["status"], "ready")
-        self.assertEqual(state["result"]["exercise_count"], 1)
-        self.assertEqual(state["result"]["student_count"], 2)
-        self.assertEqual(state["result"]["submission_count"], 0)
+        self.assertEqual([exercise.key for exercise in state["result"]["exercises"]], ["71"])
+        self.assertEqual(self.course.students.count(), 2)
+        self.assertEqual(Submission.objects.filter(exercise__course=self.course).count(), 0)
         exercise = self.course.exercises.get(key="71")
         self.assertEqual(exercise.name, "New Exercise")
         self.assertEqual(self.course.students.get(key="12345").name, "Alice Example")
@@ -214,6 +214,28 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertNotContains(response, "data-background-loading")
         matches.assert_called_once()
         store.clear()
+
+    @override_settings(CACHES={
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "summary-roster-locks"},
+        "course_report_progress": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "summary-roster-results"},
+    })
+    @patch("provider.aplus.sync_student_names")
+    @patch("review.views._build_course_similarity_summary", return_value={"pairs": []})
+    def test_summary_worker_uses_stored_roster_without_refreshing_provider(self, build_summary, sync_roster):
+        from provider.tasks import load_radar_page_data
+
+        caches["default"].clear()
+        caches["course_report_progress"].clear()
+        load_radar_page_data.run(self.course.pk, "summary", [[], 0.83, 1], "summary-roster-test")
+
+        sync_roster.assert_not_called()
+        build_summary.assert_called_once_with(self.course, [], 0.83, 1)
+        self.assertEqual(
+            caches["course_report_progress"].get("summary-roster-test"),
+            {"status": "ready", "result": {"pairs": []}},
+        )
+        caches["default"].clear()
+        caches["course_report_progress"].clear()
 
     @override_settings(CACHES={
         "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
@@ -371,17 +393,21 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertEqual(comparison.review, 0)
         self.assertContains(response, "Pair flag removed.")
 
+    @override_settings(CACHES={
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "home-bounds-locks"},
+        "course_report_progress": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "home-bounds-results"},
+    })
     @patch("review.views._flagged_comparisons")
-    def test_course_home_bounds_lists_and_keeps_full_flag_count(self, flagged_query):
+    def test_course_home_bounds_lists_without_aggregate_counts(self, flagged_query):
+        caches["default"].clear()
+        caches["course_report_progress"].clear()
+
         class FlaggedRows:
             def __init__(self):
                 self.requested_slice = None
 
             def only(self, *fields):
                 return self
-
-            def count(self):
-                return 12
 
             def __getitem__(self, requested_slice):
                 self.requested_slice = requested_slice
@@ -403,11 +429,17 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Loading report data")
         result = views._build_course_home_data(self.course, False, 1)
-        self.assertEqual(result["flagged_count"], 12)
+        self.assertNotIn("exercise_count", result)
+        self.assertNotIn("student_count", result)
+        self.assertNotIn("submission_count", result)
+        self.assertNotIn("reports_generated", result)
+        self.assertNotIn("flagged_count", result)
         self.assertEqual(rows.requested_slice.stop, 10)
         self.assertEqual(len(result["other_students"]), 50)
         self.assertTrue(result["other_students"].has_next())
         self.assertEqual(result["other_students"].paginator.count, 51)
+        caches["default"].clear()
+        caches["course_report_progress"].clear()
 
     @override_settings(CACHES={
         "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "home-locks"},
@@ -443,8 +475,8 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertEqual(self.client.get(url + "?background=1").json()["status"], "ready")
         with CaptureQueriesContext(connection) as queries:
             response = self.client.get(url)
-        self.assertEqual(response.context["submission_count"], 2)
-        self.assertEqual(response.context["flagged_count"], 1)
+        self.assertNotIn("submission_count", response.context)
+        self.assertNotIn("flagged_count", response.context)
         self.assertContains(response, "studentA and studentB")
         for query in queries:
             self.assertNotIn('"data_submission"', query["sql"])

@@ -175,39 +175,10 @@ def course(request, course_key=None, course=None):
     return render(request, "review/course.html", context)
 
 
-def _student_flag_stats(course, students):
-    """{student_id: (flagged pair count, highest flagged similarity)} for the
-    given students, from comparisons reviewed as Suspicious or worse."""
-    student_ids = {student.id for student in students}
-    if not student_ids:
-        return {}
-
-    flagged = Comparison.objects.filter(
-        submission_a__exercise__course=course,
-        submission_b__isnull=False,
-        review__gte=5,
-    ).filter(
-        Q(submission_a__student_id__in=student_ids)
-        | Q(submission_b__student_id__in=student_ids)
-    ).order_by().values_list(
-        "submission_a__student_id", "submission_b__student_id", "similarity"
-    )
-    stats = {student_id: [0, None] for student_id in student_ids}
-    wanted = student_ids
-    for a_id, b_id, similarity in flagged:
-        for student_id in (a_id, b_id):
-            if student_id in wanted:
-                entry = stats[student_id]
-                entry[0] += 1
-                if similarity is not None and (entry[1] is None or similarity > entry[1]):
-                    entry[1] = similarity
-    return {student_id: (count, top) for student_id, (count, top) in stats.items()}
-
-
 @access_resource
 def course_home(request, course_key=None, course=None) -> HttpResponse:
-    """New Radar: course home page. Overview of the course (exercise/student/
-    submission counts, report status), pinned students, recent flagged pairs,
+    """New Radar: course home page. Overview of exercises and students,
+    pinned students, recent flagged pairs,
     and the entry points (analysis, students, downloads, settings) that
     previously had no obvious home."""
     if request.session.get("legacy_radar", True):
@@ -240,15 +211,10 @@ def course_home(request, course_key=None, course=None) -> HttpResponse:
 
 def _build_course_home_data(course, include_all, students_page):
     exercises = list(
-        course.exercises.only("id", "key", "name").annotate(submission_count=Count("submissions"))
+        course.exercises.only("id", "key", "name")
     )
     exercises.sort(key=_natural_sort_key)
-    report_ids = _exercise_report_ids(course, include_all=include_all)
-
     pinned_students = list(course.students.filter(is_pinned=True))
-    flag_stats = _student_flag_stats(course, pinned_students)
-    for student in pinned_students:
-        student.flag_count, student.flag_top_similarity = flag_stats.get(student.id, (0, None))
 
     flagged = _flagged_comparisons(course).only(
         "id", "similarity", "review",
@@ -257,7 +223,6 @@ def _build_course_home_data(course, include_all, students_page):
         "submission_b__id", "submission_b__student__id", "submission_b__student__key",
         "submission_b__student__name",
     )
-    flagged_count = flagged.count()
     recent_flags = list(flagged[:10])
     other_students = Paginator(
         course.students.filter(is_pinned=False).order_by("key"), 50
@@ -267,16 +232,11 @@ def _build_course_home_data(course, include_all, students_page):
 
     return {
             "exercises": exercises,
-            "exercise_count": len(exercises),
-            "student_count": course.students.count(),
-            "submission_count": sum(exercise.submission_count for exercise in exercises),
             "include_all": include_all,
-            "reports_generated": len(report_ids),
             "course_report_completed_at": cache.get(_course_report_completed_cache_key(course)),
             "pinned_students": pinned_students,
             "other_students": other_students,
             "recent_flags": recent_flags,
-            "flagged_count": flagged_count,
     }
 
 
