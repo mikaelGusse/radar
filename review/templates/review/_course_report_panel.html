@@ -27,7 +27,6 @@ sync between the two pages again.
 	.hub-course-game-toggle { display: block; margin: .5rem 0 0 auto; padding: .2rem .6rem; font-size: .75rem; }
 </style>
 
-{# The generate button lives in review/_refresh_menu.html; include it alongside this panel. #}
 {% if show_submission_switch %}
 <div class="hub-course-actions">
 	<div class="hub-course-mode" role="group" aria-label="Submission set">
@@ -36,6 +35,12 @@ sync between the two pages again.
 	</div>
 	{% include 'review/_download_menu.html' %}
 	{% include 'review/_refresh_menu.html' with has_course_panel=True %}
+</div>
+{% endif %}
+{% if show_course_generator %}
+<div class="hub-course-actions">
+	<button id="generateCourseBtn" type="button" data-force="1">Generate Course Report</button>
+	<span class="hub-course-progress-hint">Regenerates the course's exercise reports.</span>
 </div>
 {% endif %}
 

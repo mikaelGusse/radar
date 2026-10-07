@@ -35,7 +35,6 @@
 {% if background_state.status != 'ready' %}
 <h2>{{ course.name }}</h2>
 <nav aria-label="Course navigation">
-	<a href="{% url 'dolos_hub' course_key=course.key %}?course_report=1">Whole Course report</a>
 	<a href="{% url 'students_hub' course_key=course.key %}">Student overview</a>
 </nav>
 {% if course.provider == 'a+' %}<p>Loading course roster and exercises...</p>{% endif %}
@@ -50,6 +49,7 @@
 				{% if course_report_completed_at %} &middot; course report generated {{ course_report_completed_at|date:"Y-m-d H:i" }}{% endif %}
 			</span>
 		</section>
+		{% include 'review/_course_report_panel.html' with show_course_generator=True %}
 
 		<section class="home-card">
 			<h4>Pinned students</h4>
@@ -137,14 +137,6 @@
 	</div>
 
 	<aside>
-		<section class="home-card">
-			<h4>Links</h4>
-			<div class="home-links">
-				<a href="{% url 'dolos_hub' course_key=course.key %}?course_report=1">Whole Course report<small>One Dolos report spanning every exercise</small></a>
-				<a href="{% url 'students_hub' course_key=course.key %}">Student overview<small>Per-student similarity across exercises</small></a>
-			</div>
-		</section>
-
 		<section class="home-card">
 			<h4>Exercises</h4>
 			<div class="home-scroll">

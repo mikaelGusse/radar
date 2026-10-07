@@ -205,6 +205,7 @@ def course_home(request, course_key=None, course=None) -> HttpResponse:
         "course": course,
         "include_all": include_all,
         "background_state": public_status(state),
+        "course_report_task_status": _current_course_report_status(course, request),
     })
     return render(request, "review/course_home.html", context)
 
@@ -1547,7 +1548,8 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
             return redirect("exercise", course_key=course.key, exercise_key=exercise.key)
         return redirect("course", course_key=course.key)
 
-    course_report_mode = request.GET.get("course_report") == "1"
+    if request.GET.get("course_report") == "1":
+        return redirect("course_home", course_key=course.key)
 
     if exercise is None:
         first_exercise = course.exercises.first()
@@ -1565,54 +1567,6 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
                     "current_exercise": None,
                     "course_report_mode": False,
                     "no_submissions": True,
-                },
-            )
-
-        if course_report_mode:
-            latest_report_id, completed_at = _read_latest_course_report(course, request)
-            latest_report_ids = _read_latest_course_report_ids(course, request)
-            report_url = None
-            report_urls = None
-            message = None
-            if latest_report_ids:
-                report_urls = [
-                    "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, report_id)
-                    for report_id in latest_report_ids
-                ]
-                report_url = report_urls[0]
-            elif latest_report_id:
-                report_url = "%s/#/share/%s" % (DOLOS_PROXY_WEB_URL, latest_report_id)
-            else:
-                message = "No course-wide report yet. Generate one with 'Generate Course Report'."
-
-            report_status_url = reverse(
-                "dolos_hub_exercise_report",
-                kwargs={"course_key": course.key, "exercise_key": first_exercise.key},
-            )
-
-            return render(
-                request,
-                "review/dolos_hub.html",
-                {
-                    "hierarchy": (
-                        (settings.APP_NAME, reverse("index")),
-                        (course.name, reverse("course", kwargs={"course_key": course.key})),
-                        ("Course-wide report", None),
-                    ),
-                    "course": course,
-                    "exercises": _dolos_hub_exercises(course),
-                    "current_exercise": first_exercise,
-                    "include_all": False,
-                    "message": message,
-                    "report_url": report_url,
-                    "report_urls": report_urls,
-                    "exercises_processed": len(report_urls) if report_urls else None,
-                    "loading": False,
-                    "report_status_url": report_status_url,
-                    "course_report_completed_at": completed_at,
-                    "course_report_task_status": _current_course_report_status(course, request),
-                    "course_report_mode": True,
-                    "reports_reused": request.session.get(_course_report_reused_session_key(course)),
                 },
             )
 
@@ -1678,7 +1632,6 @@ def dolos_hub(request, course_key=None, exercise_key=None, course=None, exercise
             "report_status_url": report_status_url,
             "course_report_completed_at": _read_latest_course_report(course, request)[1],
             "course_report_task_status": _current_course_report_status(course, request),
-            "course_report_mode": False,
             "report_reused": stored_report is not None and not force,
             "report_generated_at": stored_report.generated_at if stored_report else None,
             "new_submissions_count": (

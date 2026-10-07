@@ -406,6 +406,20 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertEqual(first_course.home_submission_count, 2)
         self.assertEqual(first_course.home_matched_count, 0)
 
+    def test_whole_course_report_url_redirects_to_course_home(self):
+        session = self.client.session
+        session["legacy_radar"] = False
+        session.save()
+
+        response = self.client.get(
+            reverse("dolos_hub", kwargs={"course_key": self.course.key}) + "?course_report=1"
+        )
+
+        self.assertRedirects(
+            response,
+            reverse("course_home", kwargs={"course_key": self.course.key}),
+        )
+
     def test_new_radar_pair_flag_is_shown_in_student_overview(self):
         session = self.client.session
         session["legacy_radar"] = False
@@ -523,6 +537,7 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertNotIn("submission_count", response.context)
         self.assertNotIn("flagged_count", response.context)
         self.assertContains(response, "studentA and studentB")
+        self.assertContains(response, "Generate Course Report")
         for query in queries:
             self.assertNotIn('"data_submission"', query["sql"])
             self.assertNotIn('"data_comparison"', query["sql"])
