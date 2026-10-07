@@ -329,6 +329,39 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertEqual(store.get("worker-error")["status"], "failed")
         store.delete("worker-error")
 
+    @override_settings(CACHES={
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "missing-report-locks"},
+        "course_report_progress": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "missing-report-results"},
+    })
+    @patch("review.views._fetch_dolos_pairs_rows")
+    def test_missing_dolos_report_suggests_regenerating_course_report(self, fetch):
+        from provider.tasks import load_radar_page_data
+
+        fetch.side_effect = requests.HTTPError(response=Mock(status_code=404))
+        store = caches["course_report_progress"]
+        with self.assertLogs("provider.tasks", level="ERROR"):
+            load_radar_page_data.run(
+                self.course.pk,
+                "student_matches",
+                ["studentA", False, ["MISSING_REPORT"]],
+                "missing-report-test",
+            )
+
+        result = store.get("missing-report-test")
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Regenerate the full course report", result["message"])
+        store.delete("missing-report-test")
+
+    @patch("review.views.generate_course_dolos_task.delay", return_value=Mock(id="course-task"))
+    def test_course_report_requests_always_force_per_exercise_reports(self, enqueue):
+        response = self.client.get(
+            reverse("generate_course_dolos_async", kwargs={"course_key": self.course.key})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "queued")
+        enqueue.assert_called_once_with(self.course.key, force=True)
+
     def test_radar_mode_selection_is_idempotent(self):
         url = reverse("toggle_radar_mode")
 

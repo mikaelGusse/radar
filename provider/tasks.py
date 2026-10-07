@@ -121,6 +121,15 @@ def load_radar_page_data(course_id, operation, arguments, key):
             "Radar background ready course=%s operation=%s key=%s seconds=%.3f",
             course_id, operation, key, time.monotonic() - started,
         )
+    except requests.HTTPError as exc:
+        logger.exception("Background Radar page data failed for course=%s operation=%s", course_id, operation)
+        if exc.response is not None and exc.response.status_code == 404 and operation in {
+            "summary", "student_matches", "group_pairs",
+        }:
+            message = "A saved Dolos report is missing. Regenerate the full course report, then reload this page."
+        else:
+            message = "Background loading failed. Check the worker log and retry."
+        store.set(key, {"status": "failed", "message": message}, 600)
     except Exception:
         logger.exception("Background Radar page data failed for course=%s operation=%s", course_id, operation)
         store.set(key, {"status": "failed", "message": "Background loading failed. Check the worker log and retry."}, 600)

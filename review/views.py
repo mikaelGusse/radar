@@ -1326,13 +1326,13 @@ def generate_course_dolos_async(request, course_key=None, course=None) -> JsonRe
     if request.method not in ("GET", "POST"):
         return JsonResponse({"status": "failed", "message": "Method not allowed"}, status=405)
 
-    force = request.GET.get("force") == "1" or request.POST.get("force") == "1"
+    force = True
 
     # Reuse a currently running task for this course so refreshes and repeated
     # clicks continue tracking one job instead of queueing duplicates.
     existing_task_id = request.session.get(_course_report_task_session_key(course))
 
-    if existing_task_id and not force:
+    if existing_task_id:
         started = request.session.get(_course_report_started_session_key(course))
         existing_status = _resolve_course_task_status(course, existing_task_id, started_at=started)
         if existing_status["status"] == "pending":
