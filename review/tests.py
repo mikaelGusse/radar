@@ -27,8 +27,9 @@ class CreateCheatersheetComparisonTests(TestCase):
         "course_report_progress": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "refresh-results"},
     })
     @patch("provider.tasks.load_radar_page_data.apply_async")
+    @patch("provider.aplus.AplusTokenClient")
     @patch("provider.aplus.get_api_client")
-    def test_course_home_refresh_updates_metadata_in_worker_and_preserves_submissions(self, get_client, enqueue):
+    def test_course_home_refresh_updates_metadata_in_worker_and_preserves_submissions(self, get_client, client_class, enqueue):
         from provider.tasks import load_radar_page_data
 
         caches["default"].clear()
@@ -45,20 +46,23 @@ class CreateCheatersheetComparisonTests(TestCase):
         enqueue.assert_not_called()
         poll_url = url + "?all=1&students_page=1&background=1"
         self.assertEqual(self.client.post(poll_url).json()["status"], "pending")
-        get_client.return_value.load_data.side_effect = [
-            {"exercises": [
-                {"id": "ex1", "display_name": "Changed provider name", "is_submittable": True},
-                {"id": "ex2", "display_name": "New exercise", "is_submittable": True},
-            ]},
-            [
+        def load_data(url, skip_cache=False):
+            if url == self.course.url:
+                return {"exercises": [
+                    {"id": "ex1", "display_name": "Changed provider name", "is_submittable": True},
+                    {"id": "ex2", "display_name": "New exercise", "is_submittable": True},
+                ]}
+            return [
                 {"student_id": "studentA", "full_name": "Updated Alice"},
                 {"student_id": "studentC", "full_name": "New Student"},
-            ],
-        ]
+            ]
+
+        client_class.return_value.load_data.side_effect = load_data
         load_radar_page_data.run(*enqueue.call_args.kwargs["args"])
         self.assertEqual(self.client.get(poll_url).json()["status"], "ready")
-        self.assertEqual(get_client.return_value.load_data.call_count, 2)
-        for call in get_client.return_value.load_data.call_args_list:
+        self.assertEqual(client_class.call_count, 2)
+        self.assertEqual(client_class.return_value.load_data.call_count, 2)
+        for call in client_class.return_value.load_data.call_args_list:
             self.assertTrue(call.kwargs["skip_cache"])
         self.exercise.refresh_from_db()
         self.assertEqual(self.exercise.name, "Exercise 1")

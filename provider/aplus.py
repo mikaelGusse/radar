@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from django.conf import settings
 import requests
 
@@ -145,9 +146,52 @@ def get_api_client(course):
 def import_missing_course_metadata(course, refresh=False):
     if course.provider != "a+":
         return
+
+    if refresh:
+        def load_exercises():
+            client = AplusTokenClient(settings.APLUS_ROBOT_TOKEN)
+            data = client.load_data(build_api_url(course, course.url), skip_cache=True)
+            if data is None:
+                raise AplusProviderError("The provider returned no course metadata")
+            return [
+                (
+                    URLKeyField.safe_version(str(exercise_data["id"])),
+                    exercise_data.get("display_name"),
+                )
+                for exercise_data in submittable_exercises(data.get("exercises", []))
+            ]
+
+        def load_roster():
+            client = AplusTokenClient(settings.APLUS_ROBOT_TOKEN)
+            url = build_api_url(course, API_COURSE_STUDENTS_URL % {"cid": course.api_id})
+            roster = client.load_data(url, skip_cache=True)
+            if roster is None:
+                raise AplusProviderError("The provider returned no course roster")
+            return [
+                (roster_student.get("student_id") or roster_student.get("username"), roster_student.get("full_name"))
+                for roster_student in roster
+            ]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            exercise_rows = executor.submit(load_exercises)
+            roster_rows = executor.submit(load_roster)
+            exercise_rows = exercise_rows.result()
+            roster_rows = roster_rows.result()
+
+        for exercise_key, exercise_name in exercise_rows:
+            Exercise.objects.get_or_create(
+                course=course,
+                key=exercise_key,
+                defaults={"name": exercise_name or exercise_key},
+            )
+        for student_id, full_name in roster_rows:
+            if student_id:
+                course.get_student(str(student_id), name=full_name)
+        return
+
     client = get_api_client(course)
-    if refresh or not course.exercises.exists():
-        data = client.load_data(build_api_url(course, course.url), skip_cache=refresh)
+    if not course.exercises.exists():
+        data = client.load_data(build_api_url(course, course.url))
         if data is None:
             raise AplusProviderError("The provider returned no course metadata")
         for exercise_data in submittable_exercises(data.get("exercises", [])):
@@ -157,9 +201,9 @@ def import_missing_course_metadata(course, refresh=False):
                 key=exercise_key,
                 defaults={"name": exercise_data.get("display_name") or exercise_key},
             )
-    if refresh or not course.students.exists():
+    if not course.students.exists():
         url = build_api_url(course, API_COURSE_STUDENTS_URL % {"cid": course.api_id})
-        roster = client.load_data(url, skip_cache=refresh)
+        roster = client.load_data(url)
         if roster is None:
             raise AplusProviderError("The provider returned no course roster")
         for roster_student in roster:
