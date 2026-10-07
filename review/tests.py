@@ -291,9 +291,13 @@ class CreateCheatersheetComparisonTests(TestCase):
             reverse("student_pair_hub", kwargs={"course_key": self.course.key, "a_key": "studentA", "b_key": "studentB"}),
             reverse("student_group_hub", kwargs={"course_key": self.course.key, "member_keys": "studentA-studentB-studentC"}),
             reverse("dolos_mini_comparison", kwargs={"course_key": self.course.key, "a_key": "studentA", "b_key": "studentB", "exercise_key": self.exercise.key, "left_submission_id": self.submission_a.pk, "right_submission_id": self.submission_b.pk}),
+            reverse("dolos_hub_exercise", kwargs={"course_key": self.course.key, "exercise_key": self.exercise.key}),
         ]
         for url in urls:
-            self.assertEqual(self.client.get(url).status_code, 200)
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            if url != reverse("index") and url != reverse("course_home", kwargs={"course_key": self.course.key}):
+                self.assertContains(response, "Regenerate course reports")
         fetch.assert_not_called()
         generate.assert_not_called()
         roster.assert_not_called()
@@ -537,7 +541,7 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertNotIn("submission_count", response.context)
         self.assertNotIn("flagged_count", response.context)
         self.assertContains(response, "studentA and studentB")
-        self.assertContains(response, "Generate Course Report")
+        self.assertContains(response, "Regenerate course reports")
         for query in queries:
             self.assertNotIn('"data_submission"', query["sql"])
             self.assertNotIn('"data_comparison"', query["sql"])
@@ -619,7 +623,7 @@ class CreateCheatersheetComparisonTests(TestCase):
         self.assertContains(newest_response, ">Apply</button>")
         self.assertContains(newest_response, "?newest=3")
 
-    def test_course_report_waiting_panel_includes_active_game(self):
+    def test_course_report_waiting_panel_is_compact_and_consistent(self):
         html = render_to_string(
             "review/_course_report_panel.html",
             {
@@ -628,10 +632,9 @@ class CreateCheatersheetComparisonTests(TestCase):
             },
         )
 
-        self.assertIn(
-            'class="hub-course-game active" id="canvas" width="500" height="500"',
-            html,
-        )
+        self.assertIn("Regenerate course reports", html)
+        self.assertIn('class="hub-course-progress active"', html)
+        self.assertNotIn("<canvas", html)
 
     def test_exercise_submissions_selects_n_newest_per_student(self):
         student_b = self.submission_b.student

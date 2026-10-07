@@ -2647,6 +2647,7 @@ def dolos_mini_comparison(
             "background_state": public_status(state),
             "similarity": comparison.similarity if comparison else None,
             "comparison": comparison,
+            "course_report_task_status": _current_course_report_status(course, request),
             "report_id": report_id,
             "report_url": report_url,
             "open_report_url": report_url,
@@ -2763,6 +2764,7 @@ def student_hub(request, course_key=None, student_key=None, course=None, student
             "rows": rows,
             "background_state": public_status(state),
             "include_all": include_all,
+            "course_report_task_status": _current_course_report_status(course, request),
         },
     )
 

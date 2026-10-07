@@ -49,7 +49,7 @@
 				{% if course_report_completed_at %} &middot; course report generated {{ course_report_completed_at|date:"Y-m-d H:i" }}{% endif %}
 			</span>
 		</section>
-		{% include 'review/_course_report_panel.html' with show_course_generator=True %}
+		{% include 'review/_course_report_panel.html' %}
 
 		<section class="home-card">
 			<h4>Pinned students</h4>
